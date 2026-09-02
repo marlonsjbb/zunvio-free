@@ -21,12 +21,17 @@ import { createInterface } from 'node:readline/promises';
  *    NÃO COMPROVADO, nunca finge sucesso;
  *  - nada é gravado fora de ~/.zunvio/bin.
  *
- * O Semgrep NÃO entra aqui de propósito: não é um binário único (é uma
- * ferramenta Python, com suporte a Windows ainda limitado), então continua
- * opcional com degradação honesta. A produtização multi-motor é a MASS-304.
+ * O Semgrep entra pelo mesmo caminho (autorizado por Marlon em 2026-09-02),
+ * mas por outro mecanismo: ele é uma ferramenta Python, então o
+ * provisionamento cria um ambiente Python isolado (venv) DENTRO de
+ * ~/.zunvio e instala a versão fixada via pip/PyPI oficial. Requer um
+ * Python 3.10+ já presente na máquina; sem Python, degrada honestamente.
+ * Validado em máquina real: o PyPI publica wheel nativo win_amd64 desde
+ * a série 1.17x, então Windows, Linux e macOS são todos suportados.
  */
 
 const VERSAO_GITLEAKS = '8.18.4';
+const VERSAO_SEMGREP = '1.176.0';
 
 const PINS = {
   'win32-x64': {
@@ -182,6 +187,124 @@ export async function garantirGitleaks({ log = (m) => console.error(m) } = {}) {
     return { disponivel: true, origem: 'BAIXADO' };
   } catch (err) {
     log(`[zunvio] Não foi possível obter o Gitleaks automaticamente (${err.message}); o portão de segredos ficará NÃO COMPROVADO.`);
+    return { disponivel: false, origem: null };
+  }
+}
+
+function jaNoPathSemgrep() {
+  const r = spawnSync('semgrep', ['--version'], { timeout: 15_000, shell: false });
+  return r.status === 0;
+}
+
+/**
+ * Localiza um Python 3.10+ utilizável. O stub da Microsoft Store no Windows
+ * responde a `python` sem ser um Python de verdade, por isso a decisão é
+ * pela SAÍDA (`Python 3.x.y`), nunca só pelo código de retorno.
+ */
+function acharPython() {
+  const candidatos = [
+    ['python', ['--version']],
+    ['python3', ['--version']],
+    ['py', ['-3', '--version']]
+  ];
+  for (const [cmd, args] of candidatos) {
+    const r = spawnSync(cmd, args, { timeout: 15_000, shell: false });
+    const saida = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+    const m = /Python (3)\.(\d+)\./.exec(saida);
+    if (r.status === 0 && m && Number(m[2]) >= 10) {
+      return { cmd, argsBase: cmd === 'py' ? ['-3'] : [] };
+    }
+  }
+  return null;
+}
+
+async function pedirConsentimentoSemgrep(dirVenv, log) {
+  if (process.env.ZUNVIO_AUTO_MOTORES === '1') {
+    return true;
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    log('[zunvio] O analisador estático (Semgrep) não está nesta máquina e este terminal não é interativo.');
+    log('[zunvio] Para autorizar a instalação automática, rode com ZUNVIO_AUTO_MOTORES=1; o portão de segurança estática ficará NÃO COMPROVADO nesta execução.');
+    return false;
+  }
+  log('');
+  log('O analisador de padrões perigosos no código não está nesta máquina.');
+  log(`  Ferramenta:  Semgrep ${VERSAO_SEMGREP} (código aberto, licença LGPL 2.1)`);
+  log('  Origem:      PyPI (pypi.org, pacote oficial semgrep, versão fixada)');
+  log(`  Instalação:  ambiente Python isolado em ${dirVenv} (~150 MB, nada fora desta pasta)`);
+  log('  Requisito:   usa o Python 3.10+ já presente nesta máquina');
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const resposta = (await rl.question('Instalar agora? [S/n] ')).trim().toLowerCase();
+    return resposta === '' || resposta === 's' || resposta === 'sim' || resposta === 'y' || resposta === 'yes';
+  } finally {
+    rl.close();
+  }
+}
+
+/**
+ * Garante um Semgrep utilizável, nesta ordem: já no PATH → venv em cache
+ * (~/.zunvio/semgrep-venv) → instalação via pip com consentimento e versão
+ * fixada. Nunca lança: devolve a origem usada, ou null (chamador degrada).
+ */
+export async function garantirSemgrep({ log = (m) => console.error(m) } = {}) {
+  try {
+    if (jaNoPathSemgrep()) {
+      return { disponivel: true, origem: 'PATH' };
+    }
+
+    const dirVenv = join(homedir(), '.zunvio', 'semgrep-venv');
+    const dirBin = join(dirVenv, process.platform === 'win32' ? 'Scripts' : 'bin');
+    const binarioSemgrep = join(dirBin, process.platform === 'win32' ? 'semgrep.exe' : 'semgrep');
+    const marcador = join(dirVenv, `.semgrep-${VERSAO_SEMGREP}.ok`);
+
+    if (existsSync(binarioSemgrep) && existsSync(marcador)) {
+      process.env.PATH = `${dirBin}${delimiter}${process.env.PATH ?? ''}`;
+      return { disponivel: true, origem: 'CACHE' };
+    }
+
+    const python = acharPython();
+    if (!python) {
+      log('[zunvio] Semgrep ausente e nenhum Python 3.10+ encontrado para instalá-lo; o portão de segurança estática ficará NÃO COMPROVADO.');
+      log('[zunvio] Instale o Python (python.org) ou o próprio Semgrep e repita a análise.');
+      return { disponivel: false, origem: null };
+    }
+
+    const consentiu = await pedirConsentimentoSemgrep(dirVenv, log);
+    if (!consentiu) {
+      return { disponivel: false, origem: null };
+    }
+
+    // Venv incompleto de uma tentativa anterior é descartado, nunca reaproveitado.
+    if (existsSync(dirVenv)) {
+      rmSync(dirVenv, { recursive: true, force: true });
+    }
+
+    log(`[zunvio] Criando ambiente isolado e instalando o Semgrep ${VERSAO_SEMGREP} (pode levar alguns minutos)...`);
+    const venv = spawnSync(python.cmd, [...python.argsBase, '-m', 'venv', dirVenv], { timeout: 120_000 });
+    if (venv.status !== 0) {
+      throw new Error('falha ao criar o ambiente Python isolado');
+    }
+    const pythonVenv = join(dirBin, process.platform === 'win32' ? 'python.exe' : 'python');
+    const instala = spawnSync(
+      pythonVenv,
+      ['-m', 'pip', 'install', '--quiet', `semgrep==${VERSAO_SEMGREP}`],
+      { timeout: 600_000, env: { ...process.env, PIP_DISABLE_PIP_VERSION_CHECK: '1' } }
+    );
+    if (instala.status !== 0) {
+      throw new Error(`pip não conseguiu instalar o Semgrep (${String(instala.stderr ?? '').trim().slice(0, 200)})`);
+    }
+
+    process.env.PATH = `${dirBin}${delimiter}${process.env.PATH ?? ''}`;
+    const confirma = spawnSync(binarioSemgrep, ['--version'], { timeout: 30_000 });
+    if (confirma.status !== 0) {
+      throw new Error('Semgrep instalado não executou');
+    }
+    writeFileSync(marcador, `semgrep==${VERSAO_SEMGREP} via pip/PyPI\n`);
+    log(`[zunvio] Semgrep ${String(confirma.stdout ?? '').trim()} pronto (ambiente isolado em ~/.zunvio/semgrep-venv).`);
+    return { disponivel: true, origem: 'INSTALADO' };
+  } catch (err) {
+    log(`[zunvio] Não foi possível obter o Semgrep automaticamente (${err.message}); o portão de segurança estática ficará NÃO COMPROVADO.`);
     return { disponivel: false, origem: null };
   }
 }
