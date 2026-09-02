@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://zunvio.com/schemas/zunvio-contract-v1.json",
+  "title": "ZUNVIO Publication Contract v1",
+  "description": "Contrato formal das 12 dimensões de contexto necessárias à avaliação de prontidão para publicação.",
+  "type": "object",
+  "required": ["versaoContrato", "dimensoes"],
+  "properties": {
+    "versaoContrato": { "type": "string", "const": "1.0.0" },
+    "id": { "type": "string", "minLength": 1 },
+    "cliente": { "type": "string", "minLength": 1 },
+    "clienteId": { "type": "string", "minLength": 1 },
+    "perfil": { "type": "string", "minLength": 1 },
+    "excecoesAutorizadas": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "permiteExcecao": {
+      "type": "object",
+      "additionalProperties": { "type": "boolean" }
+    },
+    "dimensoes": { "$ref": "#/definitions/dimensoes" }
+  },
+  "definitions": {
+    "valorDimensao": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        { "type": "array", "minItems": 1 },
+        { "type": "object", "minProperties": 1 }
+      ]
+    },
+    "dimensoes": {
+      "type": "object",
+      "required": [
+        "objetivoProduto",
+        "publicoUsuarios",
+        "jornadasCriticas",
+        "ambientePublicacao",
+        "integracoesIndispensaveis",
+        "dadosTratados",
+        "requisitosSegurancaPrivacidade",
+        "capacidadeDesempenho",
+        "requisitosLegaisRegulatorios",
+        "operacaoRollback",
+        "criteriosInaceitaveis",
+        "vinculoRelease"
+      ],
+      "properties": {
+        "objetivoProduto": { "$ref": "#/definitions/valorDimensao" },
+        "publicoUsuarios": { "$ref": "#/definitions/valorDimensao" },
+        "jornadasCriticas": { "$ref": "#/definitions/valorDimensao" },
+        "ambientePublicacao": { "$ref": "#/definitions/valorDimensao" },
+        "integracoesIndispensaveis": { "$ref": "#/definitions/valorDimensao" },
+        "dadosTratados": { "$ref": "#/definitions/valorDimensao" },
+        "requisitosSegurancaPrivacidade": { "$ref": "#/definitions/valorDimensao" },
+        "capacidadeDesempenho": { "$ref": "#/definitions/valorDimensao" },
+        "requisitosLegaisRegulatorios": { "$ref": "#/definitions/valorDimensao" },
+        "operacaoRollback": { "$ref": "#/definitions/valorDimensao" },
+        "criteriosInaceitaveis": { "$ref": "#/definitions/valorDimensao" },
+        "vinculoRelease": { "$ref": "#/definitions/valorDimensao" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

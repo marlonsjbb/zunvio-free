@@ -1,0 +1,28 @@
+# Regras de segredos do ZUNVIO (ruleset versionado e auditável).
+# Este arquivo é a configuração EFETIVA do Gitleaks; seu hash alimenta o
+# configHash da identidade do sensor (B5).
+title = "ZUNVIO secret detection rules"
+
+[[rules]]
+id = "github-pat"
+description = "GitHub Personal Access Token (sintético)"
+regex = '''(ghp|gho|ghu|ghs|ghr)_[0-9A-Za-z]{20,}'''
+tags = ["key", "github"]
+
+[[rules]]
+id = "generic-api-key"
+description = "Generic API key"
+regex = '''(?i)(api[_-]?key|secret|token)["']?\s*[:=]\s*["'][0-9A-Za-z_\-]{20,}["']'''
+tags = ["key", "api"]
+
+[[rules]]
+id = "aws-access-token"
+description = "AWS Access Key"
+regex = '''\b(AKIA|ASIA)[0-9A-Z]{16}\b'''
+tags = ["key", "aws"]
+
+[[rules]]
+id = "private-key"
+description = "Private key"
+regex = '''-----BEGIN [A-Z ]*PRIVATE KEY-----'''
+tags = ["key", "crypto"]

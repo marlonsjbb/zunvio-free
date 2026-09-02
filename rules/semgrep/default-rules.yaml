@@ -1,0 +1,50 @@
+rules:
+  - id: zunvio.eval-detection
+    languages:
+      - javascript
+      - typescript
+    message: "Uso de eval() detectado. Execução dinâmica de código pode permitir injeção de comandos."
+    severity: ERROR
+    pattern: eval(...)
+    metadata:
+      category: security
+      cwe: "CWE-95: Improper Neutralization of Directives in Dynamically Evaluated Code"
+
+  - id: zunvio.child-process-exec
+    languages:
+      - javascript
+      - typescript
+    message: "Uso de child_process.exec com concatenação direta de comando detectado."
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: child_process.exec($CMD, ...)
+          - pattern: exec($CMD, ...)
+    metadata:
+      category: security
+      cwe: "CWE-78: Improper Neutralization of Special Elements used in an OS Command"
+
+  - id: zunvio.insecure-random
+    languages:
+      - javascript
+      - typescript
+    message: "Uso de Math.random() para operações de segurança/criptografia."
+    severity: WARNING
+    pattern: Math.random()
+    metadata:
+      category: security
+      cwe: "CWE-338: Use of Cryptographically Weak Pseudo-Random Number Generator"
+
+  - id: zunvio.hardcoded-jwt-secret
+    languages:
+      - javascript
+      - typescript
+    message: "Possível segredo ou chave privada codificada diretamente no código."
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: jwt.sign($PAYLOAD, "...", ...)
+          - pattern: jwt.verify($TOKEN, "...", ...)
+    metadata:
+      category: security
+      cwe: "CWE-798: Use of Hard-coded Credentials"

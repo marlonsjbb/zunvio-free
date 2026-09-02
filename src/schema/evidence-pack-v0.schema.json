@@ -1,0 +1,188 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://zunvio.com/schemas/evidence-pack-v0.json",
+  "title": "EvidencePackV0",
+  "description": "Schema formal do Evidence Pack v0 do ZUNVIO Software Assurance",
+  "type": "object",
+  "definitions": {
+    "gate": {
+      "type": "object",
+      "required": ["estado"],
+      "properties": {
+        "estado": {
+          "type": "string",
+          "enum": ["ATENDE", "NAO_ATENDE", "NAO_COMPROVADO", "NAO_APLICAVEL"]
+        },
+        "subcausa": {
+          "type": "string",
+          "enum": ["SEM_EVIDENCIA_DO_CLIENTE", "FORA_DE_COBERTURA_DO_MOTOR", "MOTOR_FALHOU"]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "estado": { "const": "NAO_COMPROVADO" } },
+            "required": ["estado"]
+          },
+          "then": { "required": ["subcausa"] },
+          "else": { "not": { "required": ["subcausa"] } }
+        }
+      ],
+      "additionalProperties": true
+    }
+  },
+  "required": [
+    "versao",
+    "target",
+    "canonicalHash",
+    "canonicalContent",
+    "volatileMetadata",
+    "integrityProof",
+    "decision",
+    "coverageAndResidualRisk"
+  ],
+  "properties": {
+    "versao": {
+      "type": "string",
+      "enum": ["0.1.0", "0.2.0"]
+    },
+    "target": {
+      "type": "string",
+      "minLength": 1
+    },
+    "canonicalHash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "canonicalContent": {
+      "type": "object",
+      "required": [
+        "filesAnalyzed",
+        "inventoryDigest",
+        "scannersSummary",
+        "findingsCount",
+        "findings",
+        "exclusions",
+        "limitations"
+      ],
+      "properties": {
+        "filesAnalyzed": { "type": "integer", "minimum": 0 },
+        "inventoryDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "scannersSummary": { "type": "object" },
+        "findingsCount": { "type": "integer", "minimum": 0 },
+        "findings": { "type": "array" },
+        "exclusions": { "type": "array" },
+        "limitations": { "type": "array" },
+        "claimEvidenceMap": {
+          "$ref": "https://zunvio.com/schemas/claim-evidence-map-v1.json"
+        },
+        "decision": {
+          "type": "object",
+          "required": ["score", "coverage", "outcome", "maxPossibleScore", "gates"],
+          "properties": {
+            "score": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "coverage": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "outcome": {
+              "type": "string",
+              "enum": ["ACCEPT", "REJECT", "UNPROVEN"],
+              "description": "Estado canônico da decisão: ACCEPT=PUBLICAR, REJECT=NAO_PUBLICAR (bloqueador material comprovado), UNPROVEN=INCONCLUSIVO (sensor ausente/falha/timeout/truncamento/cobertura insuficiente/alvo fora de cobertura/integridade não comprovada)."
+            },
+            "maxPossibleScore": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "gates": {
+              "oneOf": [
+                { "type": "object" },
+                { "type": "array", "items": { "$ref": "#/definitions/gate" } }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "volatileMetadata": {
+      "type": "object",
+      "required": ["timestamp", "durationMs", "systemPlatform"],
+      "properties": {
+        "timestamp": { "type": "string" },
+        "durationMs": { "type": "number", "minimum": 0 },
+        "systemPlatform": { "type": "string" }
+      }
+    },
+    "integrityProof": {
+      "type": "object",
+      "required": ["initialDigest", "finalDigest", "immutable", "differences"],
+      "properties": {
+        "initialDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "finalDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "immutable": { "type": "boolean" },
+        "differences": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "required": ["score", "coverage", "outcome", "gates"],
+      "properties": {
+        "score": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "coverage": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "outcome": {
+          "type": "string",
+          "enum": ["ACCEPT", "REJECT", "UNPROVEN"],
+          "description": "Estado canônico da decisão: ACCEPT=PUBLICAR, REJECT=NAO_PUBLICAR (bloqueador material comprovado), UNPROVEN=INCONCLUSIVO."
+        },
+        "maxPossibleScore": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "gates": {
+          "oneOf": [
+            { "type": "object" },
+            { "type": "array", "items": { "$ref": "#/definitions/gate" } }
+          ]
+        }
+      }
+    },
+    "claimEvidenceMap": {
+      "$ref": "https://zunvio.com/schemas/claim-evidence-map-v1.json"
+    },
+    "coverageAndResidualRisk": {
+      "type": "object",
+      "required": ["excludedPaths", "unexecutedChecks", "residualRiskStatement"],
+      "properties": {
+        "excludedPaths": { "type": "array", "items": { "type": "string" } },
+        "unexecutedChecks": { "type": "array", "items": { "type": "string" } },
+        "residualRiskStatement": { "type": "string", "minLength": 1 }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "versao": { "const": "0.2.0" } },
+        "required": ["versao"]
+      },
+      "then": {
+        "properties": {
+          "canonicalContent": {
+            "required": ["decision"],
+            "properties": {
+              "decision": {
+                "properties": {
+                  "gates": {
+                    "type": "array",
+                    "items": { "$ref": "#/definitions/gate" }
+                  }
+                }
+              }
+            }
+          },
+          "decision": {
+            "required": ["maxPossibleScore"],
+            "properties": {
+              "gates": {
+                "type": "array",
+                "items": { "$ref": "#/definitions/gate" }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": true
+}

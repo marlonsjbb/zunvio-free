@@ -1,0 +1,93 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://zunvio.com/schemas/claim-evidence-map-v1.json",
+  "title": "ZUNVIO Claim-to-Evidence Map v1",
+  "description": "Mapa determinístico entre as 12 declarações do Contrato de Publicação, evidências observadas e conclusão por claim.",
+  "type": "object",
+  "required": ["schemaVersion", "totalClaims", "coverage", "summary", "claims"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "totalClaims": { "const": 12 },
+    "coverage": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "summary": {
+      "type": "object",
+      "required": ["atende", "naoAtende", "naoComprovado"],
+      "properties": {
+        "atende": { "type": "integer", "minimum": 0, "maximum": 12 },
+        "naoAtende": { "type": "integer", "minimum": 0, "maximum": 12 },
+        "naoComprovado": { "type": "integer", "minimum": 0, "maximum": 12 }
+      },
+      "additionalProperties": false
+    },
+    "claims": {
+      "type": "array",
+      "minItems": 12,
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "required": [
+          "dimension",
+          "claim",
+          "evidence",
+          "status",
+          "coverage",
+          "conclusionSource",
+          "divergence",
+          "minimumMissing"
+        ],
+        "properties": {
+          "dimension": {
+            "enum": [
+              "objetivoProduto",
+              "publicoUsuarios",
+              "jornadasCriticas",
+              "ambientePublicacao",
+              "integracoesIndispensaveis",
+              "dadosTratados",
+              "requisitosSegurancaPrivacidade",
+              "capacidadeDesempenho",
+              "requisitosLegaisRegulatorios",
+              "operacaoRollback",
+              "criteriosInaceitaveis",
+              "vinculoRelease"
+            ]
+          },
+          "claim": {
+            "type": "object",
+            "required": ["declared", "summary"],
+            "properties": {
+              "declared": { "type": "boolean" },
+              "summary": { "type": ["string", "null"], "maxLength": 160 }
+            },
+            "additionalProperties": false
+          },
+          "evidence": {
+            "type": "object",
+            "required": ["observed", "reference", "summary"],
+            "properties": {
+              "observed": { "type": "boolean" },
+              "reference": { "type": ["string", "null"], "maxLength": 80 },
+              "summary": { "type": ["string", "null"], "maxLength": 160 }
+            },
+            "additionalProperties": false
+          },
+          "status": { "enum": ["ATENDE", "NAO_ATENDE", "NAO_COMPROVADO"] },
+          "coverage": { "enum": [0, 100] },
+          "conclusionSource": {
+            "enum": [
+              "NO_DECLARED_CLAIM",
+              "DECLARATION_ONLY",
+              "EXTERNAL_CLAIM_EVIDENCE",
+              "GIT_PROVENANCE",
+              "UNTRUSTED_EVIDENCE"
+            ]
+          },
+          "divergence": { "type": ["boolean", "null"] },
+          "minimumMissing": { "type": ["string", "null"], "maxLength": 200 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
