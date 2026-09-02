@@ -9,5 +9,22 @@
   "engines": {
     "node": ">=20.10.0"
   },
-  "license": "UNLICENSED"
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/marlonsjbb/zunvio-free.git"
+  },
+  "keywords": [
+    "seguranca",
+    "assurance",
+    "scan",
+    "prontidao",
+    "gitleaks"
+  ],
+  "files": [
+    "bin/",
+    "src/",
+    "rules/",
+    "README.md"
+  ]
 }

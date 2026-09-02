@@ -267,12 +267,21 @@ function mensagemDerivada(decisaoPublicacao, natureza, total) {
 export function formatarRelatorioHumano(relatorio) {
   const linhas = [];
   const lim = (s) => String(s).slice(0, 400);
-  linhas.push(' __________');
-  linhas.push('|________  /');
-  linhas.push('       /  /');
-  linhas.push('      /  /');
-  linhas.push('     /  /___');
-  linhas.push('    /_______|');
+  // Banner na forma da folha de marca (terminal.png): o z de traço duplo,
+  // em teal quando o terminal é interativo (nunca em pipe/CI/NO_COLOR).
+  const arteZ = [
+    '  |__________|',
+    '  \u00af\u00af\u00af\u00af\u00af\u00af\u00af\u00af/ /',
+    '    /\u00af\u00af/ / /',
+    '   / / / /',
+    '  / / /\u00af\u00af/',
+    ' / /\u00af\u00af\u00af\u00af\u00af\u00af|',
+    ' |\u00af\u00af\u00af\u00af\u00af\u00af\u00af\u00af'
+  ];
+  const comTeal = process.stdout.isTTY && !process.env.NO_COLOR;
+  for (const linhaArte of arteZ) {
+    linhas.push(comTeal ? `\u001b[36m${linhaArte}\u001b[0m` : linhaArte);
+  }
   linhas.push('');
   linhas.push(`ZUNVIO CLI v${VERSAO}`);
   linhas.push('Evidence Pack v0.2.0');
