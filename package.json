@@ -1,7 +1,7 @@
 {
   "name": "zunvio-free",
   "version": "0.1.0",
-  "description": "ZUNVIO — scan gratuito de prontidão: analisa uma versão exata de um projeto e responde, com prova, se dá para publicar. Distribuição de teste.",
+  "description": "ZUNVIO: scan gratuito de prontidao. Analisa uma versao exata de um projeto e responde, com prova, se da para publicar. Distribuicao de teste.",
   "type": "module",
   "bin": {
     "zunvio": "./bin/zunvio.mjs"
