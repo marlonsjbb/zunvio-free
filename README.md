@@ -1,4 +1,4 @@
-# ZUNVIO: scan gratuito (distribuição de teste)
+# ZUNVIO Score
 
 A ZUNVIO analisa **uma versão exata** de um projeto de software e responde, com prova,
 à pergunta que importa antes de publicar: **podemos avançar com esta versão?**
@@ -11,19 +11,19 @@ comprova a imutabilidade ao final) e nada sai da sua máquina.
 Com Node.js 20+ e Git na máquina, um comando só:
 
 ```
-npx zunvio-free analyze CAMINHO\DA\PASTA
+npx zunvio-score analyze CAMINHO\DA\PASTA
 ```
 
 Exemplo:
 
 ```
-npx zunvio-free analyze D:\Projetos\meu-sistema
+npx zunvio-score analyze D:\Projetos\meu-sistema
 ```
 
 Se preferir ter o comando `zunvio` instalado de vez:
 
 ```
-npm install -g zunvio-free
+npm install -g zunvio-score
 zunvio analyze CAMINHO\DA\PASTA
 ```
 
