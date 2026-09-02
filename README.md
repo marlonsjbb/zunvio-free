@@ -11,19 +11,19 @@ comprova a imutabilidade ao final) e nada sai da sua máquina.
 Com Node.js 20+ e Git na máquina, um comando só:
 
 ```
-npx github:marlonsjbb/zunvio-free analyze CAMINHO\DA\PASTA
+npx zunvio-free analyze CAMINHO\DA\PASTA
 ```
 
 Exemplo:
 
 ```
-npx github:marlonsjbb/zunvio-free analyze D:\Projetos\meu-sistema
+npx zunvio-free analyze D:\Projetos\meu-sistema
 ```
 
 Se preferir ter o comando `zunvio` instalado de vez:
 
 ```
-npm install -g github:marlonsjbb/zunvio-free
+npm install -g zunvio-free
 zunvio analyze CAMINHO\DA\PASTA
 ```
 
