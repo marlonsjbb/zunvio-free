@@ -125,7 +125,7 @@ const ACAO_POR_PORTAO = Object.freeze({
       acao: 'Remova ou rotacione o segredo detectado e repita a análise.'
     }),
     MOTOR_FALHOU: Object.freeze({
-      impacto: 'Sem cobertura de segredos — não há prova de ausência de segredos.',
+      impacto: 'Sem cobertura de segredos: não há prova de ausência de segredos.',
       acao: 'Instale ou restaure o Gitleaks no ambiente da ferramenta e repita a análise.'
     })
   }),
@@ -135,7 +135,7 @@ const ACAO_POR_PORTAO = Object.freeze({
       acao: 'Corrija a regra Semgrep identificada (ver Detalhamento dos Achados) e repita a análise.'
     }),
     MOTOR_FALHOU: Object.freeze({
-      impacto: 'Sem cobertura de SAST — não há prova de ausência de vulnerabilidades.',
+      impacto: 'Sem cobertura de SAST: não há prova de ausência de vulnerabilidades.',
       acao: 'Instale ou restaure o Semgrep no ambiente da ferramenta e repita a análise.'
     })
   }),
@@ -270,15 +270,18 @@ export function formatarRelatorioHumano(relatorio) {
   const linhas = [''];
   const lim = (s) => String(s).slice(0, 400);
   // Banner na forma da folha de marca (terminal.png): o z de traço duplo,
-  // em teal quando o terminal é interativo (nunca em pipe/CI/NO_COLOR).
+  // transcrito do grid da referência ampliada (barras de contorno com _ e |,
+  // duas diagonais paralelas descendo 2 colunas por linha, tampas de _
+  // fechando os paralelogramos). Só ASCII puro (_ | /), sem macron: zero
+  // dependência de fonte/codepage. Teal quando o terminal é interativo.
   const arteZ = [
-    '  |__________|',
-    '  \u00af\u00af\u00af\u00af\u00af\u00af\u00af\u00af/ /',
-    '    /\u00af\u00af/ / /',
-    '   / / / /',
-    '  / / /\u00af\u00af/',
-    ' / /\u00af\u00af\u00af\u00af\u00af\u00af|',
-    ' |\u00af\u00af\u00af\u00af\u00af\u00af\u00af\u00af'
+    '    __________________',
+    '  |_______________    |',
+    '         _____  /    /',
+    '       /    / /    /',
+    '     /    / /____/',
+    '   /    /____________',
+    '  |___________________|'
   ];
   const comTeal = process.stdout.isTTY && !process.env.NO_COLOR;
   for (const linhaArte of arteZ) {
@@ -317,14 +320,17 @@ export function formatarRelatorioHumano(relatorio) {
     linhas.push('ANALYSIS COMPLETE.');
     linhas.push(lim(`ZUNVIO SCORE · ${numSeguro(score.observado)}`));
     linhas.push(lim(`SCORE MÁXIMO · ${numSeguro(score.maximoPossivel)}`));
-    // Cobertura em duas contas separadas por responsabilidade: o que os
-    // motores comprovaram medindo, e o que o contrato de publicação cobriu.
-    // O total continua sendo o menor dos dois (regra de decisão inalterada),
-    // mas o dono precisa VER que o scan trabalhou mesmo sem contrato.
-    const temDecomposicao = Number.isInteger(score.coberturaMotores) && Number.isInteger(score.coberturaContrato);
-    if (temDecomposicao && score.coberturaContrato < score.coberturaMotores) {
-      linhas.push(lim(`COBERTURA · ${numSeguro(score.cobertura)}% (motores comprovaram ${numSeguro(score.coberturaMotores)}%; contrato de publicação em ${numSeguro(score.coberturaContrato)}%)`));
-      linhas.push(lim('  O total é limitado pelo contrato de publicação: forneça-o com --contract para liberar o restante.'));
+    // Cobertura por responsabilidade, cada conta na sua linha. O total
+    // min(motores, contrato) existe só para o portão de PUBLICAR (interno,
+    // regra inalterada): como manchete ele era um 0% perpétuo sem informação
+    // em todo scan sem contrato, então saiu da vitrine (decisão de Marlon,
+    // 2026-09-02).
+    if (Number.isInteger(score.coberturaMotores)) {
+      linhas.push(lim(`COBERTURA DOS MOTORES · ${numSeguro(score.coberturaMotores)}%`));
+      const semContrato = !Number.isInteger(score.coberturaContrato) || score.coberturaContrato === 0;
+      linhas.push(lim(semContrato
+        ? 'CONTEXTO DO CONTRATO  · 0% (sem contrato de publicação; forneça com --contract)'
+        : `CONTEXTO DO CONTRATO  · ${numSeguro(score.coberturaContrato)}%`));
     } else {
       linhas.push(lim(`COBERTURA · ${numSeguro(score.cobertura)}%`));
     }
@@ -359,7 +365,7 @@ export function formatarRelatorioHumano(relatorio) {
     // Próximas ações: derivadas de campos estruturados dos gates.
     linhas.push('  Próximas ações:');
     if (publicar) {
-      linhas.push('    Nenhum bloqueador. Estado limpo — pronto para publicar conforme contrato e evidências.');
+      linhas.push('    Nenhum bloqueador. Estado limpo: pronto para publicar conforme contrato e evidências.');
     } else {
       const portoesBloqueantes = (relatorio.avaliacao.portoes || []).filter(
         (p) => p && p.obrigatorio === true && (p.estado === 'NAO_ATENDE' || p.estado === 'NAO_COMPROVADO')
@@ -367,6 +373,8 @@ export function formatarRelatorioHumano(relatorio) {
       let temAcao = false;
       for (const portao of portoesBloqueantes) {
         const { causa, impacto, acao } = descreverAcao(portao);
+        // Linha em branco antes de cada item: legibilidade pedida por Marlon.
+        linhas.push('');
         linhas.push(lim(`    - ${NOMES_PORTAO[portao.id] || 'Portão não identificado'}`));
         linhas.push(lim(`      Causa:   ${causa}`));
         linhas.push(lim(`      Impacto: ${impacto}`));
@@ -378,6 +386,7 @@ export function formatarRelatorioHumano(relatorio) {
       const temContratoInconclusivo = Array.isArray(grupos?.semEvidenciaCliente)
         && grupos.semEvidenciaCliente.some((b) => typeof b === 'string' && b.startsWith('Contrato de publicação'));
       if (temContratoInconclusivo) {
+        linhas.push('');
         linhas.push('    - Contrato de publicação');
         linhas.push('      Causa:   Contrato de publicação insuficiente ou ausente.');
         linhas.push('      Impacto: Sem contrato suficiente, não é possível aprovar a publicação.');
@@ -385,7 +394,7 @@ export function formatarRelatorioHumano(relatorio) {
         temAcao = true;
       }
       if (!temAcao) {
-        linhas.push('    Bloqueio sem causa estruturada — consulte o Evidence Pack para detalhes.');
+        linhas.push('    Bloqueio sem causa estruturada; consulte o Evidence Pack para detalhes.');
       }
     }
     // badges: imprime apenas o tipo (enum validado), nunca o texto livre.
@@ -400,7 +409,7 @@ export function formatarRelatorioHumano(relatorio) {
   if (relatorio.claimEvidenceMap) {
     const mapa = relatorio.claimEvidenceMap;
     linhas.push('----------------------------------------------------------------');
-    linhas.push(lim(`CLAIMS · ATENDE ${numSeguro(mapa.summary.atende)} | NÃO ATENDE ${numSeguro(mapa.summary.naoAtende)} | NÃO COMPROVADO ${numSeguro(mapa.summary.naoComprovado)} | COBERTURA ${numSeguro(mapa.coverage)}%`));
+    linhas.push(lim(`CLAIMS · ATENDE ${numSeguro(mapa.summary.atende)} | NÃO ATENDE ${numSeguro(mapa.summary.naoAtende)} | NÃO COMPROVADO ${numSeguro(mapa.summary.naoComprovado)} | CONTEXTO ${numSeguro(mapa.coverage)}%`));
     // B6: dimensões de claim são enums internos (12 canônicas) — qualquer outra é
     // omitida (não ecoada como texto externo).
     const dimensoesSeguras = (claims) => (Array.isArray(claims) ? claims : [])
