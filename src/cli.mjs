@@ -402,7 +402,11 @@ export function formatarRelatorioHumano(relatorio) {
       const tipos = relatorio.badges
         .map((b) => (b && typeof b.tipo === 'string' && ENUM_BADGE.has(b.tipo) ? b.tipo : null))
         .filter(Boolean);
-      if (tipos.length > 0) linhas.push(lim(`BADGES · ${tipos.join(' | ')}`));
+      if (tipos.length > 0) {
+        // Linha em branco antes dos badges: separa das Próximas ações (Marlon).
+        linhas.push('');
+        linhas.push(lim(`BADGES · ${tipos.join(' | ')}`));
+      }
     }
   }
 
