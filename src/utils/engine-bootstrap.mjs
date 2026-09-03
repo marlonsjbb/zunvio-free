@@ -102,12 +102,17 @@ async function pedirConsentimento(pin, dirCache, log) {
   log('  Origem:      github.com/gitleaks/gitleaks (release oficial)');
   log('  Integridade: SHA-256 conferido contra valor fixado neste código');
   log(`  Destino:     ${dirCache} (nada fora desta pasta)`);
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  // O prompt sai no stderr, junto com todo o resto do provisionamento: o
+  // stdout fica intocado até o relatório (visto em máquina real: readline no
+  // stdout deixou o cursor do console fora de posição e o banner sobrescreveu
+  // as últimas linhas do log).
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
   try {
     const resposta = (await rl.question('Baixar agora? [S/n] ')).trim().toLowerCase();
     return resposta === '' || resposta === 's' || resposta === 'sim' || resposta === 'y' || resposta === 'yes';
   } finally {
     rl.close();
+    process.stdin.pause();
   }
 }
 
@@ -233,12 +238,14 @@ async function pedirConsentimentoSemgrep(dirVenv, log) {
   log('  Origem:      PyPI (pypi.org, pacote oficial semgrep, versão fixada)');
   log(`  Instalação:  ambiente Python isolado em ${dirVenv} (~150 MB, nada fora desta pasta)`);
   log('  Requisito:   usa o Python 3.10+ já presente nesta máquina');
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  // Mesma regra do Gitleaks: prompt no stderr, stdout reservado ao relatório.
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
   try {
     const resposta = (await rl.question('Instalar agora? [S/n] ')).trim().toLowerCase();
     return resposta === '' || resposta === 's' || resposta === 'sim' || resposta === 'y' || resposta === 'yes';
   } finally {
     rl.close();
+    process.stdin.pause();
   }
 }
 

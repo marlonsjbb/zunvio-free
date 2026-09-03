@@ -265,7 +265,9 @@ function mensagemDerivada(decisaoPublicacao, natureza, total) {
 }
 
 export function formatarRelatorioHumano(relatorio) {
-  const linhas = [];
+  // Primeira linha vazia: o banner nunca cola na última linha do
+  // provisionamento (e a folha de marca pede respiro).
+  const linhas = [''];
   const lim = (s) => String(s).slice(0, 400);
   // Banner na forma da folha de marca (terminal.png): o z de traço duplo,
   // em teal quando o terminal é interativo (nunca em pipe/CI/NO_COLOR).
@@ -288,8 +290,10 @@ export function formatarRelatorioHumano(relatorio) {
   linhas.push('================================================================');
   linhas.push('  Relatório de Avaliação de Prontidão');
   linhas.push('================================================================');
-  // Caminhos e textos livres nunca são impressos crus: usa fingerprint.
-  linhas.push(lim(`Alvo Analisado:      fp:${fp(relatorio.target)}`));
+  // O relatório humano é do DONO do projeto: caminho e regra aparecem de
+  // verdade, com controles/escapes neutralizados (B6: injeção de terminal).
+  // O fingerprint continua sendo a regra na projeção --json (Evidence Pack).
+  linhas.push(lim(`Alvo Analisado:      ${textoLegivelSeguro(relatorio.target, 200)}`));
   const sha = extrairShaRelease(relatorio);
   linhas.push(lim(`Release/HEAD:        ${typeof sha === 'string' && /^[0-9a-f]{40}$/i.test(sha) ? sha : '(não auditável via Git)'}`));
   linhas.push(lim(`Duração:             ${numSeguro(relatorio.duracaoTotalMs)}ms`));
@@ -313,7 +317,17 @@ export function formatarRelatorioHumano(relatorio) {
     linhas.push('ANALYSIS COMPLETE.');
     linhas.push(lim(`ZUNVIO SCORE · ${numSeguro(score.observado)}`));
     linhas.push(lim(`SCORE MÁXIMO · ${numSeguro(score.maximoPossivel)}`));
-    linhas.push(lim(`COBERTURA · ${numSeguro(score.cobertura)}%`));
+    // Cobertura em duas contas separadas por responsabilidade: o que os
+    // motores comprovaram medindo, e o que o contrato de publicação cobriu.
+    // O total continua sendo o menor dos dois (regra de decisão inalterada),
+    // mas o dono precisa VER que o scan trabalhou mesmo sem contrato.
+    const temDecomposicao = Number.isInteger(score.coberturaMotores) && Number.isInteger(score.coberturaContrato);
+    if (temDecomposicao && score.coberturaContrato < score.coberturaMotores) {
+      linhas.push(lim(`COBERTURA · ${numSeguro(score.cobertura)}% (motores comprovaram ${numSeguro(score.coberturaMotores)}%; contrato de publicação em ${numSeguro(score.coberturaContrato)}%)`));
+      linhas.push(lim('  O total é limitado pelo contrato de publicação: forneça-o com --contract para liberar o restante.'));
+    } else {
+      linhas.push(lim(`COBERTURA · ${numSeguro(score.cobertura)}%`));
+    }
     const rotulo = publicar ? 'PUBLICAR' : (inconclusivo ? 'INCONCLUSIVO' : (invalido ? 'INVÁLIDO' : 'NÃO PUBLICAR'));
     const sufixo = inconclusivo
       ? ' (avaliação incompleta; não é reprovação do projeto)'
@@ -439,13 +453,14 @@ export function formatarRelatorioHumano(relatorio) {
   if (Array.isArray(relatorio.achados) && relatorio.achados.length > 0) {
     linhas.push('----------------------------------------------------------------');
     linhas.push('Detalhamento dos Achados:');
-    // B6: usa severity (enum), id (fingerprint) e linha; filePath/ruleId são
-    // identificadores seguros ou fingerprint — nunca conteúdo bruto.
+    // O dono precisa AGIR sobre o achado: arquivo:linha e regra reais, com
+    // controles/escapes neutralizados (B6). O valor do segredo em si nunca é
+    // impresso em lugar nenhum. Na projeção --json tudo segue fingerprintado.
     for (const a of relatorio.achados) {
       const tagDelta = a.deltaInfo?.noDelta ? ' [NOVO NO DELTA]' : '';
-      // B6: id só se for fingerprint real (ZVS-…); ruleId é externo → fingerprint.
-      linhas.push(lim(`  [${enumSeguro(a.severity, ENUM_SEVERIDADE)}] ${achadoIdSeguro(a.id)}${tagDelta} — fp:${fp(a.filePath)}:${numSeguro(a.startLine)}`));
-      linhas.push(lim(`    Regra:    fp:${fp(a.ruleId)}`));
+      linhas.push(lim(`  [${enumSeguro(a.severity, ENUM_SEVERIDADE)}] ${textoLegivelSeguro(a.filePath, 160)}:${numSeguro(a.startLine)}${tagDelta}`));
+      linhas.push(lim(`    Regra:    ${textoLegivelSeguro(a.ruleId, 120)}`));
+      linhas.push(lim(`    Id:       ${achadoIdSeguro(a.id)}`));
     }
   }
 
@@ -456,7 +471,8 @@ export function formatarRelatorioHumano(relatorio) {
   if (relatorio.canonicalHash) {
     linhas.push(lim(`  Evidence Pack:  ${hexSeguro(relatorio.canonicalHash)}`));
   }
-  linhas.push('================================================================\n');
+  linhas.push('================================================================');
+  linhas.push('Relatório completo, histórico e acompanhamento: https://zunvio.com.br\n');
 
   return linhas.join('\n');
 }
@@ -468,6 +484,17 @@ const ENUM_COMPLETUDE = new Set(['CLEAN', 'WITH_FINDINGS', 'NOT_STARTED', 'FAILE
 const ENUM_SENSOR = new Set(['gitleaks', 'semgrep']);
 const ENUM_CHECK = new Set(['gitleaks-secret-detection', 'semgrep-sast-detection', 'git-delta-blast-radius']);
 const MAX_LINHA_JSON = 400;
+
+/**
+ * Texto real legível para o relatório humano local: neutraliza controles C0/C1
+ * (incluindo ESC, a via de injeção de terminal do cenário B6) e limita o
+ * tamanho. NÃO substitui o fingerprint da projeção --json; vale só para o que
+ * o dono do projeto vê no próprio terminal.
+ */
+function textoLegivelSeguro(valor, max = 200) {
+  const semControles = String(valor ?? '').replace(/[\u0000-\u001f\u007f-\u009f]/g, '\uFFFD');
+  return semControles.length > max ? `${semControles.slice(0, max)}(...)` : semControles;
+}
 
 function fpCompleto(valor) {
   return createHash('sha256').update(String(valor ?? '')).digest('hex');

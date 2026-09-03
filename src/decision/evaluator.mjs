@@ -337,7 +337,12 @@ function calcularScore(portoes, contrato) {
   return Object.freeze({
     observado,
     maximoPossivel: observado + pesoDesconhecido,
-    cobertura
+    cobertura,
+    // Decomposição só para EXIBIÇÃO no relatório humano: a regra de decisão
+    // (min entre motores e contrato) permanece em `cobertura`. Sem isso, todo
+    // scan sem contrato mostra 0% e esconde o que os motores comprovaram.
+    coberturaMotores: coberturaPortoes,
+    coberturaContrato: Number.isInteger(coberturaContrato) ? coberturaContrato : null
   });
 }
 
