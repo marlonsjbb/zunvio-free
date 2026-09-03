@@ -277,7 +277,7 @@ export function formatarRelatorioHumano(relatorio) {
   const arteZ = [
     '   ___________________',
     '  |_______________    |',
-    '         ____   /    /',
+    '         ____    /   /',
     '       /    /  /   /',
     '     /    /  /___/',
     '   /    /_____________',
