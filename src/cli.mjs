@@ -275,12 +275,12 @@ export function formatarRelatorioHumano(relatorio) {
   // fechando os paralelogramos). Só ASCII puro (_ | /), sem macron: zero
   // dependência de fonte/codepage. Teal quando o terminal é interativo.
   const arteZ = [
-    '    __________________',
+    '   ___________________',
     '  |_______________    |',
-    '         _____  /    /',
+    '         ____   /    /',
     '       /    / /    /',
     '     /    / /____/',
-    '   /    /____________',
+    '   /    /_____________',
     '  |___________________|'
   ];
   const comTeal = process.stdout.isTTY && !process.env.NO_COLOR;
