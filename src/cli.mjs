@@ -318,8 +318,14 @@ export function formatarRelatorioHumano(relatorio) {
     const totalBloqueadores = Array.isArray(decisao.bloqueadores) ? decisao.bloqueadores.length : 0;
     linhas.push('----------------------------------------------------------------');
     linhas.push('ANALYSIS COMPLETE.');
-    linhas.push(lim(`ZUNVIO SCORE · ${numSeguro(score.observado)}`));
-    linhas.push(lim(`SCORE MÁXIMO · ${numSeguro(score.maximoPossivel)}`));
+    // A escala do score é SEMPRE 0 a 100 (soma dos pesos dos portões).
+    // maximoPossivel é outra informação: o teto que ESTE projeto ainda
+    // alcança depois de descontar reprovações comprovadas. O rótulo antigo
+    // (SCORE MÁXIMO) fazia parecer que a escala encolhia (Marlon, 2026-09-02).
+    linhas.push(lim(`ZUNVIO SCORE · ${numSeguro(score.observado)} de 100`));
+    if (Number.isInteger(score.maximoPossivel) && score.maximoPossivel < 100) {
+      linhas.push(lim(`AINDA ALCANÇÁVEL · ${numSeguro(score.maximoPossivel)} (reprovações comprovadas descontam o teto)`));
+    }
     // Cobertura por responsabilidade, cada conta na sua linha. O total
     // min(motores, contrato) existe só para o portão de PUBLICAR (interno,
     // regra inalterada): como manchete ele era um 0% perpétuo sem informação
@@ -354,9 +360,31 @@ export function formatarRelatorioHumano(relatorio) {
     const temGrupos = gruposRelatorio.some(([, itens]) => Array.isArray(itens) && itens.length > 0);
     if (temGrupos) {
       linhas.push('  Impedimentos e limites por responsabilidade:');
+      // Nomes por grupo: só o nome canônico do portão (enum NOMES_PORTAO) e o
+      // peso estruturado; nunca texto bruto de scanner/evidência (B6). O peso
+      // responde na prática "o que compõe a cobertura que falta" (Marlon).
+      const portoesDoRelatorio = relatorio.avaliacao.portoes || [];
+      const nomesDoGrupo = (filtro) => portoesDoRelatorio
+        .filter((p) => p && filtro(p))
+        .map((p) => {
+          const nome = NOMES_PORTAO[p.id] || 'Portão não identificado';
+          return p.estado === 'NAO_COMPROVADO' && Number.isInteger(p.peso) ? `${nome} (${p.peso}%)` : nome;
+        });
+      const nomesPorTitulo = {
+        'Reprovações comprovadas do projeto': nomesDoGrupo((p) => p.estado === 'NAO_ATENDE'),
+        'Evidências sob responsabilidade do cliente': nomesDoGrupo((p) => p.estado === 'NAO_COMPROVADO' && p.subcausa === 'SEM_EVIDENCIA_DO_CLIENTE'),
+        'Fora da cobertura atual do ZUNVIO': nomesDoGrupo((p) => p.estado === 'NAO_COMPROVADO' && p.subcausa === 'FORA_DE_COBERTURA_DO_MOTOR'),
+        'Falhas operacionais dos motores ZUNVIO': nomesDoGrupo((p) => p.estado === 'NAO_COMPROVADO' && p.subcausa === 'MOTOR_FALHOU')
+      };
       for (const [titulo, itens] of gruposRelatorio) {
         const n = Array.isArray(itens) ? itens.length : 0;
-        if (n > 0) linhas.push(lim(`  ${titulo}: ${n}`));
+        if (n > 0) {
+          const nomes = [...(nomesPorTitulo[titulo] || [])];
+          // Entradas de contrato no grupo do cliente não são portões; o título fixo cobre.
+          if (n > nomes.length) nomes.push('Contrato de publicação');
+          const sufixo = nomes.length > 0 ? ` · ${nomes.join(', ')}` : '';
+          linhas.push(lim(`  ${titulo}: ${n}${sufixo}`));
+        }
       }
     } else if (totalBloqueadores > 0) {
       linhas.push(lim(`  Bloqueadores: ${totalBloqueadores}`));
