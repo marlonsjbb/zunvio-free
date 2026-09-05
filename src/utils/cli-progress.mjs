@@ -19,15 +19,28 @@ function subirLinhas(n) {
 /**
  * Decide se ALGUM indicador visual (etapas ou spinner simples) pode escrever
  * códigos ANSI nesta execução: só em TTY interativo real, nunca em --json,
- * pipe/redirecionamento, ou com NO_COLOR setado (MASS-103 e MASS-388, achado
- * 1). Única fonte de verdade — tanto o indicador de etapas em `src/cli.mjs`
- * quanto o spinner de bootstrap do provisionamento de motores em
- * `src/utils/engine-bootstrap.mjs` reaproveitam esta mesma checagem, em vez
- * de duplicar a condição em cada lugar.
+ * pipe/redirecionamento, CI, ou com NO_COLOR setado (MASS-103 e MASS-388,
+ * achado 1). Única fonte de verdade — tanto o indicador de etapas em
+ * `src/cli.mjs` (escreve em stdout) quanto o spinner de bootstrap do
+ * provisionamento de motores em `src/utils/engine-bootstrap.mjs` (escreve em
+ * stderr) reaproveitam esta mesma checagem, em vez de duplicar a condição em
+ * cada lugar — por isso as DUAS streams (stdout e stderr) precisam ser TTY
+ * real: fail-safe, na dúvida desativa (revisão do Codex, MASS-388 round 2).
  * @param {string[]} args - Argumentos crus da linha de comando.
  */
 export function podeUsarIndicadorVisual(args = []) {
-  return Boolean(process.stdout.isTTY) && !args.includes('--json') && !process.env.NO_COLOR;
+  if (args.includes('--json')) return false;
+  // Convenção universal de CI: QUALQUER valor definido (mesmo "false" como
+  // string) indica execução automatizada — nunca arriscar vazar ANSI em log
+  // de CI (revisão do Codex, MASS-388 round 2).
+  if (process.env.CI) return false;
+  // Convenção NO_COLOR (no-color.org): QUALQUER valor definido, inclusive
+  // string vazia (`NO_COLOR=`), desliga cores. Checagem precisa ser
+  // `!== undefined`, nunca uma checagem de truthy (que trata string vazia
+  // como falsa e deixaria passar `NO_COLOR=` sem querer — revisão do Codex,
+  // MASS-388 round 2).
+  if (process.env.NO_COLOR !== undefined) return false;
+  return Boolean(process.stdout.isTTY) && Boolean(process.stderr.isTTY);
 }
 
 /**
