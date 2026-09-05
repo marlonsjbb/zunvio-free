@@ -7,7 +7,7 @@ import packageJson from '../package.json' with { type: 'json' };
 import { verificarReceipt, RESULTADO } from './receipt/verifier.mjs';
 import { calcularHashCanonico } from './utils/canonical-json.mjs';
 import { TERMOS_GLOSSARIO } from './glossary/termos.mjs';
-import { criarIndicadorEtapas } from './utils/cli-progress.mjs';
+import { criarIndicadorEtapas, podeUsarIndicadorVisual } from './utils/cli-progress.mjs';
 import { gerarRelatorioHtml } from './report/html-report.mjs';
 
 // Versão do produto/CLI deriva do package.json. A versão do Evidence Pack/schema
@@ -571,7 +571,7 @@ export function formatarRelatorioHumano(relatorio) {
     linhas.push(lim(`  Evidence Pack:  ${hexSeguro(relatorio.canonicalHash)}`));
   }
   linhas.push('================================================================');
-  linhas.push('Relatório completo, histórico e acompanhamento: https://zunvio.com.br\n');
+  linhas.push('Site do ZUNVIO: https://zunvio.com.br\n');
 
   return linhas.join('\n');
 }
@@ -619,7 +619,7 @@ function executarGlossario(stdout) {
     linhas.push(`  ${item.definicao}`);
     linhas.push('');
   }
-  linhas.push('Relatório completo, histórico e acompanhamento: https://zunvio.com.br');
+  linhas.push('Site do ZUNVIO: https://zunvio.com.br');
   stdout(`${linhas.join('\n')}\n`);
   return 0;
 }
@@ -1154,8 +1154,30 @@ export async function executarCli(args = [], io = {}, opcoesExtras = {}) {
   // O indicador ao vivo só existe em TTY interativo real, nunca em --json,
   // pipe/redirecionamento, CI ou NO_COLOR — nesses casos permanece `null` e
   // nenhum código ANSI é escrito (comentário 8: "desligar automaticamente").
-  const usarIndicador = Boolean(process.stdout.isTTY) && !parsed.json && !process.env.NO_COLOR;
+  // `podeUsarIndicadorVisual` é a mesma checagem reaproveitada pelo spinner
+  // de bootstrap do provisionamento de motores (MASS-388, achado 1).
+  const usarIndicador = podeUsarIndicadorVisual(args);
   let indicador = null;
+  // Checagem de versão publicada (MASS-388, achado 3): já disparada em
+  // `bin/zunvio.mjs`, em paralelo com bootstrap e análise. Um chamador que
+  // não passar `checagemVersaoPromise` — ex.: uso programático direto de
+  // `executarCli` — simplesmente não vê aviso nenhum.
+  const { checagemVersaoPromise, ...opcoesAnalise } = opcoesExtras;
+  // Revisão do Codex (MASS-388 round 2): dar `await` direto nessa Promise
+  // ANTES de imprimir o relatório atrasava toda análise rápida até o
+  // timeout de 1.5s embutido em `iniciarChecagemVersao`, mesmo quando o
+  // scan em si levava bem menos tempo — contraria o requisito de "nunca
+  // atrasar perceptivelmente o fim da análise". Correção: anexa aqui um
+  // `.then` fire-and-forget (sem await) só pra capturar o resultado numa
+  // variável local, sem bloquear nada; o aviso só é lido e impresso mais
+  // abaixo, DEPOIS do relatório principal, e só se a Promise já tiver
+  // resolvido a essa altura. Nunca um novo await bloqueante — se ainda
+  // estiver pendente, o aviso simplesmente não aparece nesta execução (não
+  // vale a pena atrasar o comando só pra mostrar isso).
+  let avisoVersaoResolvido = null;
+  if (checagemVersaoPromise) {
+    checagemVersaoPromise.then((aviso) => { avisoVersaoResolvido = aviso; }).catch(() => {});
+  }
 
   try {
     if (usarIndicador) {
@@ -1173,7 +1195,7 @@ export async function executarCli(args = [], io = {}, opcoesExtras = {}) {
       onEtapa: indicador
         ? (nome, estado) => (estado === 'concluida' ? indicador.concluir(nome) : indicador.iniciar(nome))
         : undefined,
-      ...opcoesExtras
+      ...opcoesAnalise
     });
     indicador?.finalizar();
 
@@ -1183,6 +1205,11 @@ export async function executarCli(args = [], io = {}, opcoesExtras = {}) {
       stdout(`${formatarRelatorioHumano(relatorio)}\n`);
       escreverEAbrirRelatorioHtml(relatorio, stderr);
     }
+
+    // Só avisa se a checagem de versão já tiver resolvido a esta altura
+    // (fire-and-forget anexado acima, sem novo await) — sai sempre em
+    // stderr, nunca no stdout que carrega o JSON no modo `--json`.
+    if (avisoVersaoResolvido) stderr(`${avisoVersaoResolvido}\n`);
 
     // MASS-307: código de saída em TRÊS estados canônicos.
     //   0 = PUBLICAR (pronto);
