@@ -10,9 +10,24 @@ const QUADROS_SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧',
 const INTERVALO_MS = 90;
 const OCULTAR_CURSOR = '[?25l';
 const MOSTRAR_CURSOR = '[?25h';
+const LIMPAR_LINHA = '[2K';
 
 function subirLinhas(n) {
   return n > 0 ? `[${n}A` : '';
+}
+
+/**
+ * Decide se ALGUM indicador visual (etapas ou spinner simples) pode escrever
+ * códigos ANSI nesta execução: só em TTY interativo real, nunca em --json,
+ * pipe/redirecionamento, ou com NO_COLOR setado (MASS-103 e MASS-388, achado
+ * 1). Única fonte de verdade — tanto o indicador de etapas em `src/cli.mjs`
+ * quanto o spinner de bootstrap do provisionamento de motores em
+ * `src/utils/engine-bootstrap.mjs` reaproveitam esta mesma checagem, em vez
+ * de duplicar a condição em cada lugar.
+ * @param {string[]} args - Argumentos crus da linha de comando.
+ */
+export function podeUsarIndicadorVisual(args = []) {
+  return Boolean(process.stdout.isTTY) && !args.includes('--json') && !process.env.NO_COLOR;
 }
 
 /**
@@ -83,4 +98,57 @@ export function criarIndicadorEtapas(nomesEtapas, opcoes = {}) {
   render();
 
   return { iniciar, concluir, finalizar };
+}
+
+/**
+ * Spinner de atividade de uma linha só ("trabalhando..."), para trechos que
+ * não têm etapas nomeadas — hoje só o provisionamento dos motores (download
+ * do Gitleaks, instalação do Semgrep via pip em `engine-bootstrap.mjs`), que
+ * roda em `bin/zunvio.mjs` ANTES do indicador de etapas de
+ * `criarIndicadorEtapas` sequer existir (MASS-388, achado 1: hoje essas
+ * etapas ficam mudas por até minutos). Mesmas regras do indicador de etapas:
+ * quem chama decide se instancia (`podeUsarIndicadorVisual`), a stream é
+ * explícita (o bootstrap escreve em stderr, junto dos prompts de
+ * consentimento, pra não misturar com o stdout reservado ao relatório), e
+ * `finalizar` é idempotente e deve ser chamado sempre — inclusive no caminho
+ * de erro/timeout — pra nunca deixar o cursor escondido ou uma linha presa.
+ * @param {string} mensagem - Texto fixo ao lado do spinner.
+ * @param {{ stream?: NodeJS.WritableStream }} [opcoes]
+ */
+export function criarIndicadorSimples(mensagem, opcoes = {}) {
+  const stream = opcoes.stream || process.stdout;
+  let quadro = 0;
+  let intervalo = null;
+  let finalizado = false;
+
+  function render() {
+    if (finalizado) return;
+    stream.write(`\r${LIMPAR_LINHA}${QUADROS_SPINNER[quadro % QUADROS_SPINNER.length]} ${mensagem}`);
+  }
+
+  function aoSigint() {
+    finalizar();
+    process.exit(130);
+  }
+
+  function finalizar() {
+    if (finalizado) return;
+    finalizado = true;
+    if (intervalo) clearInterval(intervalo);
+    intervalo = null;
+    process.removeListener('SIGINT', aoSigint);
+    stream.write(`\r${LIMPAR_LINHA}`);
+    stream.write(MOSTRAR_CURSOR);
+  }
+
+  stream.write(OCULTAR_CURSOR);
+  process.on('SIGINT', aoSigint);
+  intervalo = setInterval(() => {
+    quadro += 1;
+    render();
+  }, INTERVALO_MS);
+  if (typeof intervalo.unref === 'function') intervalo.unref();
+  render();
+
+  return { finalizar };
 }

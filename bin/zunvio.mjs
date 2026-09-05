@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { executarCli } from '../src/cli.mjs';
 import { garantirGitleaks, garantirSemgrep } from '../src/utils/engine-bootstrap.mjs';
+import { podeUsarIndicadorVisual } from '../src/utils/cli-progress.mjs';
 
 const args = process.argv.slice(2);
 
@@ -25,8 +26,9 @@ if (args[0] === 'skill') {
     args[0] === 'verify' || args[0] === 'glossario';
 
   if (!semVarredura) {
-    await garantirGitleaks();
-    await garantirSemgrep();
+    const indicadorVisual = podeUsarIndicadorVisual(args);
+    await garantirGitleaks({ indicadorVisual });
+    await garantirSemgrep({ indicadorVisual });
   }
 
   const codigoSaida = await executarCli(args);

@@ -7,7 +7,7 @@ import packageJson from '../package.json' with { type: 'json' };
 import { verificarReceipt, RESULTADO } from './receipt/verifier.mjs';
 import { calcularHashCanonico } from './utils/canonical-json.mjs';
 import { TERMOS_GLOSSARIO } from './glossary/termos.mjs';
-import { criarIndicadorEtapas } from './utils/cli-progress.mjs';
+import { criarIndicadorEtapas, podeUsarIndicadorVisual } from './utils/cli-progress.mjs';
 import { gerarRelatorioHtml } from './report/html-report.mjs';
 
 // Versão do produto/CLI deriva do package.json. A versão do Evidence Pack/schema
@@ -1154,7 +1154,9 @@ export async function executarCli(args = [], io = {}, opcoesExtras = {}) {
   // O indicador ao vivo só existe em TTY interativo real, nunca em --json,
   // pipe/redirecionamento, CI ou NO_COLOR — nesses casos permanece `null` e
   // nenhum código ANSI é escrito (comentário 8: "desligar automaticamente").
-  const usarIndicador = Boolean(process.stdout.isTTY) && !parsed.json && !process.env.NO_COLOR;
+  // `podeUsarIndicadorVisual` é a mesma checagem reaproveitada pelo spinner
+  // de bootstrap do provisionamento de motores (MASS-388, achado 1).
+  const usarIndicador = podeUsarIndicadorVisual(args);
   let indicador = null;
 
   try {
