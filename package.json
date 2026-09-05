@@ -1,6 +1,6 @@
 {
   "name": "zunvio-score",
-  "version": "0.1.4",
+  "version": "0.1.8",
   "description": "ZUNVIO Score: analisa uma versao exata de um projeto de software e responde, com prova, se da para publicar. Analise local e somente leitura.",
   "type": "module",
   "bin": {
@@ -26,6 +26,7 @@
     "src/",
     "rules/",
     "skills/",
+    "marca/zunvio-wordmark.png",
     "README.md"
   ]
 }

@@ -1,10 +1,14 @@
 import { resolve } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { executarAnaliseProjeto } from './orchestrator.mjs';
 import packageJson from '../package.json' with { type: 'json' };
 import { verificarReceipt, RESULTADO } from './receipt/verifier.mjs';
 import { calcularHashCanonico } from './utils/canonical-json.mjs';
+import { TERMOS_GLOSSARIO } from './glossary/termos.mjs';
+import { criarIndicadorEtapas } from './utils/cli-progress.mjs';
+import { gerarRelatorioHtml } from './report/html-report.mjs';
 
 // Versão do produto/CLI deriva do package.json. A versão do Evidence Pack/schema
 // (0.2.0) é independente e aparece separadamente no relatório — não são a mesma coisa.
@@ -71,6 +75,7 @@ USO:
   zunvio analyze <projeto> [opções]
   zunvio [caminho-do-projeto] [opções]
   zunvio verify <receipt.json>
+  zunvio glossario
   node bin/zunvio.mjs [caminho-do-projeto] [opções]
 
 OPÇÕES:
@@ -91,12 +96,17 @@ EXEMPLOS:
   zunvio .
   zunvio --diff --base origin/main
   zunvio verify ./score-receipt.json
+  zunvio glossario
 
 DECISÃO (código de saída):
   0 = PUBLICAR      avaliação obrigatória concluída e nenhum bloqueador
   1 = NÃO PUBLICAR  bloqueador material comprovado (achado/reprovação/integridade)
   2 = INCONCLUSIVO  sensor ausente/falha/timeout/truncamento/cobertura insuficiente
   3 = erro          uso inválido ou falha operacional
+
+Fora de --json, cada análise também grava um relatório completo em
+"zunvio-report.html" na pasta onde o comando foi executado, e abre no
+navegador padrão quando a sessão é interativa.
 `;
 }
 
@@ -257,8 +267,8 @@ function mensagemDerivada(decisaoPublicacao, natureza, total) {
     return 'AVALIAÇÃO INCONCLUSIVA: faltam evidências obrigatórias ou cobertura mínima. NÃO AFIRMO QUE PODE PUBLICAR.';
   }
   if (decisaoPublicacao === 'NAO_PUBLICAR') {
-    if (natureza === 'MISTO') return 'Há reprovações comprovadas do projeto e limitações do ZUNVIO.';
-    return `Existem ${total} bloqueador(es) material(is) comprovado(s) que impedem a publicação.`;
+    if (natureza === 'MISTO') return 'Há bloqueios materiais detectados que exigem revisão e limitações do ZUNVIO.';
+    return `Existem ${total} bloqueador(es) preventivo(s) que exigem revisão antes da publicação.`;
   }
   // INVÁLIDO: decisão desconhecida/incompatível — nunca uma decisão de publicação.
   return 'DECISÃO DESCONHECIDA OU INVÁLIDA — FALHA FECHADA.';
@@ -316,6 +326,51 @@ export function formatarRelatorioHumano(relatorio) {
     const invalido = decisaoPublicacao === 'INVALIDO';
     const natureza = enumSeguro(decisao.naturezaImpedimento, ENUM_NATUREZA);
     const totalBloqueadores = Array.isArray(decisao.bloqueadores) ? decisao.bloqueadores.length : 0;
+    // Hoisted para reuso na camada "Resumo para decisão" (abaixo) e na lista
+    // completa de "Próximas ações" (mais adiante) — mesma seleção, uma só vez.
+    const portoesBloqueantes = (relatorio.avaliacao.portoes || []).filter(
+      (p) => p && p.obrigatorio === true && (p.estado === 'NAO_ATENDE' || p.estado === 'NAO_COMPROVADO')
+    );
+
+    // MASS-103 comentário 9: camada de linguagem comum ANTES do detalhe
+    // técnico ("divulgação progressiva em duas camadas"). Responde, nesta
+    // ordem, às 6 perguntas aprovadas pelo dono: podemos avançar? qual o
+    // nível de confiança? o que impede avançar? qual o impacto de negócio?
+    // o que fazer agora? onde consultar o técnico? Todo o texto vem de
+    // campos estruturados/enums já validados ou de templates fixos — nunca
+    // de conteúdo bruto de scanner/achado (mesma disciplina B6 do resto
+    // deste relatório).
+    linhas.push('================================================================');
+    linhas.push('  Resumo para decisão');
+    linhas.push('================================================================');
+    const rotuloResumo = publicar ? 'PUBLICAR' : (inconclusivo ? 'INCONCLUSIVO' : (invalido ? 'INVÁLIDO' : 'NÃO PUBLICAR'));
+    linhas.push(`DECISÃO · ${rotuloResumo}`);
+    linhas.push(lim(mensagemDerivada(decisaoPublicacao, natureza, totalBloqueadores)));
+    const coberturaPrincipal = Number.isInteger(score.coberturaMotores) ? score.coberturaMotores : score.cobertura;
+    if (Number.isInteger(coberturaPrincipal)) {
+      linhas.push(`Os portões têm conclusão para ${coberturaPrincipal}% do peso avaliado; o contexto do contrato é medido separadamente.`);
+    }
+    if (totalBloqueadores > 0) {
+      linhas.push(`Foram encontrados ${totalBloqueadores} bloqueio(s) obrigatório(s).`);
+    }
+    // Portão de maior prioridade para a manchete: um bloqueio material
+    // (NAO_ATENDE) fala mais alto que uma evidência ainda faltando.
+    const portaoPrincipal = portoesBloqueantes.find((p) => p.estado === 'NAO_ATENDE') || portoesBloqueantes[0] || null;
+    if (portaoPrincipal) {
+      const { impacto, acao } = descreverAcao(portaoPrincipal);
+      linhas.push('');
+      linhas.push(`Principal motivo: ${lim(NOMES_PORTAO[portaoPrincipal.id] || 'Portão não identificado')}`);
+      linhas.push(lim(`  ${impacto}`));
+      linhas.push('O que fazer agora:');
+      linhas.push(lim(`  ${acao}`));
+    } else if (publicar) {
+      linhas.push('');
+      linhas.push('O que fazer agora:');
+      linhas.push('  Revise as limitações e o contexto da release antes da decisão final.');
+    }
+    linhas.push('');
+    linhas.push('Entenda os termos: rode "zunvio glossario" ou veja os detalhes técnicos abaixo.');
+
     linhas.push('----------------------------------------------------------------');
     linhas.push('ANALYSIS COMPLETE.');
     // A escala do score é SEMPRE 0 a 100 (soma dos pesos dos portões).
@@ -395,9 +450,6 @@ export function formatarRelatorioHumano(relatorio) {
     if (publicar) {
       linhas.push('    Nenhum bloqueador. Estado limpo: pronto para publicar conforme contrato e evidências.');
     } else {
-      const portoesBloqueantes = (relatorio.avaliacao.portoes || []).filter(
-        (p) => p && p.obrigatorio === true && (p.estado === 'NAO_ATENDE' || p.estado === 'NAO_COMPROVADO')
-      );
       let temAcao = false;
       for (const portao of portoesBloqueantes) {
         const { causa, impacto, acao } = descreverAcao(portao);
@@ -486,6 +538,12 @@ export function formatarRelatorioHumano(relatorio) {
       : `FALHOU [${enumSeguro(sem.status, ENUM_STATUS)}]`;
   linhas.push(`  - Semgrep:   ${statusSemgrep}`);
 
+  if (typeof git.erroBaseline === 'string' && git.erroBaseline) {
+    linhas.push(lim(`  Aviso: baseline de segredos (.zunvio-baseline.json) inválida, ignorada por inteiro: ${git.erroBaseline}`));
+  } else if (Array.isArray(git.suprimidosPorBaseline) && git.suprimidosPorBaseline.length > 0) {
+    linhas.push(`  Segredos suprimidos por baseline revisada: ${numSeguro(git.suprimidosPorBaseline.length)} (não contam no score nem na decisão)`);
+  }
+
   linhas.push('----------------------------------------------------------------');
   linhas.push(lim(`Total de Achados: ${numSeguro(relatorio.totalAchados)}`));
   const rs = relatorio.resumoSeveridade || {};
@@ -517,6 +575,65 @@ export function formatarRelatorioHumano(relatorio) {
 
   return linhas.join('\n');
 }
+
+// Abre um caminho local com o programa padrão do sistema operacional (o
+// navegador, no caso de um .html). Silencioso e best-effort: falha de
+// provisionamento do navegador nunca deve derrubar a análise em si.
+function abrirComPrograma(caminho) {
+  const comando = process.platform === 'win32'
+    ? { executavel: 'cmd', args: ['/c', 'start', '""', caminho] }
+    : process.platform === 'darwin'
+      ? { executavel: 'open', args: [caminho] }
+      : { executavel: 'xdg-open', args: [caminho] };
+  try {
+    const filho = spawn(comando.executavel, comando.args, { detached: true, stdio: 'ignore', shell: false });
+    filho.unref();
+  } catch {
+    // best-effort: nunca falhar a análise por não conseguir abrir o navegador.
+  }
+}
+
+// Grava o relatório HTML (MASS-103/MASS-283) na pasta onde o comando foi
+// executado e abre no navegador padrão quando a sessão é interativa. Nunca
+// derruba a análise: qualquer falha aqui é reportada em stderr e ignorada.
+function escreverEAbrirRelatorioHtml(relatorio, stderr) {
+  try {
+    const html = gerarRelatorioHtml(relatorio);
+    const caminho = resolve(process.cwd(), 'zunvio-report.html');
+    writeFileSync(caminho, html, { encoding: 'utf8' });
+    stderr(`\n[zunvio] Relatório completo salvo em: ${caminho}\n`);
+    if (process.stdout.isTTY && !process.env.CI) {
+      abrirComPrograma(caminho);
+    }
+  } catch (err) {
+    stderr(`[zunvio] Não foi possível gerar o relatório HTML (${err.message}).\n`);
+  }
+}
+
+// Imprime o glossário reutilizável (MASS-103, comentário 9) — mesma fonte que
+// alimentaria qualquer relatório futuro. Somente leitura, sem varredura nem rede.
+function executarGlossario(stdout) {
+  const linhas = ['', 'ZUNVIO — Glossário', '================================================================', ''];
+  for (const item of TERMOS_GLOSSARIO) {
+    linhas.push(item.termo);
+    linhas.push(`  ${item.definicao}`);
+    linhas.push('');
+  }
+  linhas.push('Relatório completo, histórico e acompanhamento: https://zunvio.com.br');
+  stdout(`${linhas.join('\n')}\n`);
+  return 0;
+}
+
+// Ordem de exibição do indicador de etapas (MASS-103, comentário 8). Rótulos
+// refletem a ordem real de execução do orquestrador, não o exemplo conceitual
+// (não vinculante) da issue.
+const ETAPAS_PROGRESSO = [
+  'Preparação e integridade',
+  'Gitleaks',
+  'Semgrep',
+  'Contexto (contrato e evidências)',
+  'Decisão'
+];
 
 const ENUM_GATE_ID = new Set(Object.keys(NOMES_PORTAO));
 const ENUM_GATE_ESTADO = new Set(['ATENDE', 'NAO_ATENDE', 'NAO_COMPROVADO', 'NAO_APLICAVEL']);
@@ -1018,6 +1135,10 @@ export async function executarCli(args = [], io = {}, opcoesExtras = {}) {
     return executarVerify(args, stdout);
   }
 
+  if (args[0] === 'glossario') {
+    return executarGlossario(stdout);
+  }
+
   const parsed = parseCliArgs(args);
 
   if (parsed.help) {
@@ -1030,7 +1151,17 @@ export async function executarCli(args = [], io = {}, opcoesExtras = {}) {
     return 0;
   }
 
+  // O indicador ao vivo só existe em TTY interativo real, nunca em --json,
+  // pipe/redirecionamento, CI ou NO_COLOR — nesses casos permanece `null` e
+  // nenhum código ANSI é escrito (comentário 8: "desligar automaticamente").
+  const usarIndicador = Boolean(process.stdout.isTTY) && !parsed.json && !process.env.NO_COLOR;
+  let indicador = null;
+
   try {
+    if (usarIndicador) {
+      indicador = criarIndicadorEtapas(ETAPAS_PROGRESSO);
+    }
+
     const relatorio = await executarAnaliseProjeto(parsed.target, {
       delta: {
         ativo: parsed.diff,
@@ -1039,13 +1170,18 @@ export async function executarCli(args = [], io = {}, opcoesExtras = {}) {
       },
       caminhoContrato: parsed.caminhoContrato,
       caminhoEvidencias: parsed.caminhoEvidencias,
+      onEtapa: indicador
+        ? (nome, estado) => (estado === 'concluida' ? indicador.concluir(nome) : indicador.iniciar(nome))
+        : undefined,
       ...opcoesExtras
     });
+    indicador?.finalizar();
 
     if (parsed.json) {
       stdout(serializarJsonSeguro(projetarRelatorioJsonSeguro(relatorio)));
     } else {
       stdout(`${formatarRelatorioHumano(relatorio)}\n`);
+      escreverEAbrirRelatorioHtml(relatorio, stderr);
     }
 
     // MASS-307: código de saída em TRÊS estados canônicos.
@@ -1061,6 +1197,9 @@ export async function executarCli(args = [], io = {}, opcoesExtras = {}) {
     // Fallback defensivo: sem decisão reconhecida, falha fechado como erro.
     return 3;
   } catch {
+    // O indicador nunca pode ficar preso (cursor oculto, animação viva) no
+    // caminho de erro — finalizar aqui também, idempotente.
+    indicador?.finalizar();
     // B6: erro vira código fixo — nunca ecoa error.message cru (que poderia
     // conter target hostil, tokens e linhas sem limite).
     if (parsed.json) {

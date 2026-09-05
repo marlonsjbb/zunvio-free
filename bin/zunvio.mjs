@@ -15,11 +15,14 @@ if (args[0] === 'skill') {
 } else {
   // O provisionamento (com consentimento do usuário) só faz sentido quando vai
   // haver varredura de verdade; ajuda/versão/verify não tocam em motor nenhum.
+  // `zunvio` sem nenhum argumento É uma varredura real (escaneia o diretório
+  // atual, `parseCliArgs` resolve target para '.') — nunca tratar isso como
+  // "sem varredura", senão o bootstrap nunca roda e os motores cacheados em
+  // `~/.zunvio` ficam invisíveis pro scanner (acharado real, 2026-09-04).
   const semVarredura =
-    args.length === 0 ||
     args.includes('-h') || args.includes('--help') ||
     args.includes('-v') || args.includes('--version') ||
-    args[0] === 'verify';
+    args[0] === 'verify' || args[0] === 'glossario';
 
   if (!semVarredura) {
     await garantirGitleaks();

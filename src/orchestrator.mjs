@@ -7,6 +7,7 @@ import { redigirObjeto } from './utils/redactor.mjs';
 import { avaliarRelatorio } from './decision/evaluator.mjs';
 import { resolverContratoPublicacao, resolverEvidenciasProjeto } from './decision/context-loader.mjs';
 import { construirMapaClaimEvidence } from './decision/claim-evidence-map.mjs';
+import { carregarBaseline, aplicarBaseline } from './decision/baseline.mjs';
 import { gerarBadges } from './badges.mjs';
 import { construirEvidencePackV0 } from './models/evidence-pack.mjs';
 
@@ -34,11 +35,18 @@ const ORDEM_SEVERIDADE = {
  * @param {string} [opcoes.caminhoEvidencias] - Caminho de arquivo JSON com evidências.
  * @param {object} [opcoes.contrato] - Contrato de publicação para o projeto.
  * @param {string} [opcoes.caminhoContrato] - Caminho de arquivo JSON com contrato.
+ * @param {(nomeEtapa: string, estado: 'iniciando'|'concluida') => void} [opcoes.onEtapa] - Callback opcional de progresso (MASS-103); só observa, nunca decide.
  * @returns {Promise<object>} Evidence Pack v0 sanitizado e validado com comprovação de integridade e delta.
  */
 export async function executarAnaliseProjeto(targetPath, opcoes = {}) {
+  // Callback opcional de progresso por etapa (MASS-103, comentário 8): só
+  // reflete etapas reais já executadas abaixo, nunca decide nem altera
+  // avaliação/score. Ausente por padrão (no-op) — nenhum caminho existente
+  // muda de comportamento quando o chamador não fornece `opcoes.onEtapa`.
+  const onEtapa = typeof opcoes.onEtapa === 'function' ? opcoes.onEtapa : () => {};
   const inicioTotal = Date.now();
 
+  onEtapa('Preparação e integridade', 'iniciando');
   // 1. Validação estrita do diretório-alvo com realpath e rejeição de symlink na raiz
   const targetCanonic = validarDiretorioAlvo(targetPath);
 
@@ -52,14 +60,23 @@ export async function executarAnaliseProjeto(targetPath, opcoes = {}) {
     limitesExcedidos,
     motivoLimite
   } = snapshotInicial;
+  onEtapa('Preparação e integridade', 'concluida');
 
   // 3. Execução Concorrente dos Scanners Read-Only e Diff Git
   const opcoesDelta = opcoes.delta || {};
   const calcularDelta = opcoesDelta.ativo !== false;
 
+  onEtapa('Gitleaks', 'iniciando');
+  onEtapa('Semgrep', 'iniciando');
   const [resultadoGitleaks, resultadoSemgrep, resultadoDiff] = await Promise.all([
-    executarScannerGitleaks(targetCanonic, opcoes.gitleaks || {}),
-    executarScannerSemgrep(targetCanonic, opcoes.semgrep || {}),
+    executarScannerGitleaks(targetCanonic, opcoes.gitleaks || {}).then((r) => {
+      onEtapa('Gitleaks', 'concluida');
+      return r;
+    }),
+    executarScannerSemgrep(targetCanonic, opcoes.semgrep || {}).then((r) => {
+      onEtapa('Semgrep', 'concluida');
+      return r;
+    }),
     calcularDelta
       ? obterDiffGit(targetCanonic, {
           baseRef: opcoesDelta.baseRef,
@@ -69,8 +86,17 @@ export async function executarAnaliseProjeto(targetPath, opcoes = {}) {
       : Promise.resolve({ disponivel: false, ehRepositorioGit: false, arquivosDelta: [], erro: null })
   ]);
 
+  // 3.5. Baseline auditável (MASS-325): achados de segredo já revisados e aceitos
+  // por humano (fingerprint + autor + data + justificativa) não contam para o
+  // portão de decisão nem para o score. A evidência original nunca é descartada,
+  // só fica fora da contagem que bloqueia — auditável em `suprimidosPorBaseline`.
+  const baselineGitleaks = carregarBaseline(targetCanonic);
+  const { achadosRestantes: achadosGitleaksRestantes, suprimidos: gitleaksSuprimidos } = baselineGitleaks.erro
+    ? { achadosRestantes: resultadoGitleaks.achados, suprimidos: [] }
+    : aplicarBaseline(resultadoGitleaks.achados, baselineGitleaks);
+
   // 4. Agregação e Ordenação Determinística dos Achados
-  const todosAchados = [...resultadoGitleaks.achados, ...resultadoSemgrep.achados];
+  const todosAchados = [...achadosGitleaksRestantes, ...resultadoSemgrep.achados];
 
   // Ordena por severidade (CRITICAL -> INFO) e por caminho/linha
   todosAchados.sort((a, b) => {
@@ -112,14 +138,18 @@ export async function executarAnaliseProjeto(targetPath, opcoes = {}) {
     gitleaks: {
       status: resultadoGitleaks.status,
       disponivel: resultadoGitleaks.disponivel,
-      totalAchados: resultadoGitleaks.achados.length,
+      totalAchados: achadosGitleaksRestantes.length,
       duracaoMs: resultadoGitleaks.duracaoMs,
       erro: resultadoGitleaks.erro,
       // Escopo efetivamente varrido: working tree e/ou histórico Git (PER-207).
       escopo: resultadoGitleaks.escopo || { workingTree: false, historico: false },
       // Identidade do sensor: id, versão real, hash de configuração, digest da
       // saída normalizada e completude (MASS-97).
-      identidade: resultadoGitleaks.identidade || null
+      identidade: resultadoGitleaks.identidade || null,
+      // Achados suprimidos por baseline auditável (MASS-325): nunca escondidos,
+      // só fora da contagem que bloqueia o portão.
+      suprimidosPorBaseline: gitleaksSuprimidos,
+      erroBaseline: baselineGitleaks.erro
     },
     semgrep: {
       status: resultadoSemgrep.status,
@@ -132,6 +162,7 @@ export async function executarAnaliseProjeto(targetPath, opcoes = {}) {
   };
 
   // 9. Resolução de Proveniência Git Real, Contrato e Evidências
+  onEtapa('Contexto (contrato e evidências)', 'iniciando');
   let commitReal = null;
   if (resultadoDiff.ehRepositorioGit) {
     try {
@@ -142,8 +173,10 @@ export async function executarAnaliseProjeto(targetPath, opcoes = {}) {
   const contrato = resolverContratoPublicacao(targetCanonic, opcoes, { commitReal });
   const evidencias = resolverEvidenciasProjeto(targetCanonic, opcoes, commitReal);
   const claimEvidenceMap = construirMapaClaimEvidence({ contrato, evidencias });
+  onEtapa('Contexto (contrato e evidências)', 'concluida');
 
   // 10. Avaliação de Portões e Badges
+  onEtapa('Decisão', 'iniciando');
   const avaliacao = avaliarRelatorio({
     scanners,
     integridade,
@@ -157,6 +190,7 @@ export async function executarAnaliseProjeto(targetPath, opcoes = {}) {
     contrato
   });
   const badges = gerarBadges(avaliacao, { integridade });
+  onEtapa('Decisão', 'concluida');
 
   // 11. Construção Formal do Evidence Pack v0
   const evidencePack = construirEvidencePackV0({
