@@ -571,7 +571,7 @@ export function formatarRelatorioHumano(relatorio) {
     linhas.push(lim(`  Evidence Pack:  ${hexSeguro(relatorio.canonicalHash)}`));
   }
   linhas.push('================================================================');
-  linhas.push('Relatório completo, histórico e acompanhamento: https://zunvio.com.br\n');
+  linhas.push('Site do ZUNVIO: https://zunvio.com.br\n');
 
   return linhas.join('\n');
 }
@@ -619,7 +619,7 @@ function executarGlossario(stdout) {
     linhas.push(`  ${item.definicao}`);
     linhas.push('');
   }
-  linhas.push('Relatório completo, histórico e acompanhamento: https://zunvio.com.br');
+  linhas.push('Site do ZUNVIO: https://zunvio.com.br');
   stdout(`${linhas.join('\n')}\n`);
   return 0;
 }
