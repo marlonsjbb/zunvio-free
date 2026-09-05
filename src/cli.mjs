@@ -1158,6 +1158,12 @@ export async function executarCli(args = [], io = {}, opcoesExtras = {}) {
   // de bootstrap do provisionamento de motores (MASS-388, achado 1).
   const usarIndicador = podeUsarIndicadorVisual(args);
   let indicador = null;
+  // Checagem de versão publicada (MASS-388, achado 3): já disparada em
+  // `bin/zunvio.mjs`, em paralelo com bootstrap e análise; aqui só se aguarda
+  // o resultado (nunca se dispara a checagem por conta própria, então um
+  // chamador que não passar `checagemVersaoPromise` — ex.: uso programático
+  // direto de `executarCli` — simplesmente não vê aviso nenhum).
+  const { checagemVersaoPromise, ...opcoesAnalise } = opcoesExtras;
 
   try {
     if (usarIndicador) {
@@ -1175,9 +1181,21 @@ export async function executarCli(args = [], io = {}, opcoesExtras = {}) {
       onEtapa: indicador
         ? (nome, estado) => (estado === 'concluida' ? indicador.concluir(nome) : indicador.iniciar(nome))
         : undefined,
-      ...opcoesExtras
+      ...opcoesAnalise
     });
     indicador?.finalizar();
+
+    // Espera o resultado da checagem de versão só AGORA, no momento de
+    // montar o relatório final — a Promise já foi disparada bem antes (em
+    // `bin/zunvio.mjs`) e nunca rejeita (fail-open embutido em
+    // `iniciarChecagemVersao`); o `catch` aqui é só uma segunda camada de
+    // segurança contra qualquer chamador que injete uma Promise diferente.
+    // Vale pro `--json` também: sai em stderr, nunca no stdout que carrega o
+    // JSON.
+    if (checagemVersaoPromise) {
+      const avisoVersao = await checagemVersaoPromise.catch(() => null);
+      if (avisoVersao) stderr(`${avisoVersao}\n`);
+    }
 
     if (parsed.json) {
       stdout(serializarJsonSeguro(projetarRelatorioJsonSeguro(relatorio)));
