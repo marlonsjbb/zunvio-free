@@ -17,6 +17,12 @@
 
 const REGISTRY_URL = 'https://registry.npmjs.org/zunvio-score/latest';
 const TIMEOUT_MS = 1500;
+// Validação defensiva do valor de versão vindo do registry ANTES de
+// interpolar na mensagem impressa no terminal do usuário (revisão do Codex,
+// MASS-388 round 2): mesmo o npm sendo fonte confiável, nunca interpola
+// string de rede sem confirmar formato esperado — evita qualquer sequência
+// de escape de terminal ou conteúdo inesperado entrando na mensagem.
+const REGEX_SEMVER = /^\d+\.\d+\.\d+(-[\w.]+)?$/;
 
 function partesVersao(v) {
   return String(v ?? '').split('.').map((n) => Number.parseInt(n, 10) || 0);
@@ -53,6 +59,9 @@ export function iniciarChecagemVersao(versaoAtual) {
       const dados = await resposta.json();
       const versaoPublicada = typeof dados?.version === 'string' ? dados.version : null;
       if (!versaoPublicada) return null;
+      // Fora do formato semver esperado: trata como se a checagem tivesse
+      // falhado (fail-open) em vez de interpolar dado de rede não validado.
+      if (!REGEX_SEMVER.test(versaoPublicada)) return null;
       if (!versaoAtualEhMaisAntiga(versaoAtual, versaoPublicada)) return null;
       return `[zunvio] Há uma versão mais nova publicada (v${versaoPublicada}); rode \`npx zunvio-score@latest\` para usá-la.`;
     } catch {

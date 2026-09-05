@@ -1159,11 +1159,25 @@ export async function executarCli(args = [], io = {}, opcoesExtras = {}) {
   const usarIndicador = podeUsarIndicadorVisual(args);
   let indicador = null;
   // Checagem de versão publicada (MASS-388, achado 3): já disparada em
-  // `bin/zunvio.mjs`, em paralelo com bootstrap e análise; aqui só se aguarda
-  // o resultado (nunca se dispara a checagem por conta própria, então um
-  // chamador que não passar `checagemVersaoPromise` — ex.: uso programático
-  // direto de `executarCli` — simplesmente não vê aviso nenhum).
+  // `bin/zunvio.mjs`, em paralelo com bootstrap e análise. Um chamador que
+  // não passar `checagemVersaoPromise` — ex.: uso programático direto de
+  // `executarCli` — simplesmente não vê aviso nenhum.
   const { checagemVersaoPromise, ...opcoesAnalise } = opcoesExtras;
+  // Revisão do Codex (MASS-388 round 2): dar `await` direto nessa Promise
+  // ANTES de imprimir o relatório atrasava toda análise rápida até o
+  // timeout de 1.5s embutido em `iniciarChecagemVersao`, mesmo quando o
+  // scan em si levava bem menos tempo — contraria o requisito de "nunca
+  // atrasar perceptivelmente o fim da análise". Correção: anexa aqui um
+  // `.then` fire-and-forget (sem await) só pra capturar o resultado numa
+  // variável local, sem bloquear nada; o aviso só é lido e impresso mais
+  // abaixo, DEPOIS do relatório principal, e só se a Promise já tiver
+  // resolvido a essa altura. Nunca um novo await bloqueante — se ainda
+  // estiver pendente, o aviso simplesmente não aparece nesta execução (não
+  // vale a pena atrasar o comando só pra mostrar isso).
+  let avisoVersaoResolvido = null;
+  if (checagemVersaoPromise) {
+    checagemVersaoPromise.then((aviso) => { avisoVersaoResolvido = aviso; }).catch(() => {});
+  }
 
   try {
     if (usarIndicador) {
@@ -1185,24 +1199,17 @@ export async function executarCli(args = [], io = {}, opcoesExtras = {}) {
     });
     indicador?.finalizar();
 
-    // Espera o resultado da checagem de versão só AGORA, no momento de
-    // montar o relatório final — a Promise já foi disparada bem antes (em
-    // `bin/zunvio.mjs`) e nunca rejeita (fail-open embutido em
-    // `iniciarChecagemVersao`); o `catch` aqui é só uma segunda camada de
-    // segurança contra qualquer chamador que injete uma Promise diferente.
-    // Vale pro `--json` também: sai em stderr, nunca no stdout que carrega o
-    // JSON.
-    if (checagemVersaoPromise) {
-      const avisoVersao = await checagemVersaoPromise.catch(() => null);
-      if (avisoVersao) stderr(`${avisoVersao}\n`);
-    }
-
     if (parsed.json) {
       stdout(serializarJsonSeguro(projetarRelatorioJsonSeguro(relatorio)));
     } else {
       stdout(`${formatarRelatorioHumano(relatorio)}\n`);
       escreverEAbrirRelatorioHtml(relatorio, stderr);
     }
+
+    // Só avisa se a checagem de versão já tiver resolvido a esta altura
+    // (fire-and-forget anexado acima, sem novo await) — sai sempre em
+    // stderr, nunca no stdout que carrega o JSON no modo `--json`.
+    if (avisoVersaoResolvido) stderr(`${avisoVersaoResolvido}\n`);
 
     // MASS-307: código de saída em TRÊS estados canônicos.
     //   0 = PUBLICAR (pronto);
