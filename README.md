@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="marca/zunvio-wordmark-color.png" alt="ZUNVIO" width="480" />
+<img src="marca/zunvio-wordmark-color2.png" alt="ZUNVIO" width="480" />
 
 <br />
 
