@@ -1,12 +1,22 @@
 # Regras de segredos do ZUNVIO (ruleset versionado e auditável).
 # Este arquivo é a configuração EFETIVA do Gitleaks; seu hash alimenta o
 # configHash da identidade do sensor (B5).
+#
+# MASS-324: ampliação curada (não é o ruleset padrão completo do Gitleaks
+# importado sem revisão — ver rules/README.md para o critério de curadoria e
+# a medição de falso positivo contra o corpus do benchmark MASS-80).
 title = "ZUNVIO secret detection rules"
 
 [[rules]]
 id = "github-pat"
 description = "GitHub Personal Access Token (sintético)"
 regex = '''(ghp|gho|ghu|ghs|ghr)_[0-9A-Za-z]{20,}'''
+tags = ["key", "github"]
+
+[[rules]]
+id = "github-pat-fine-grained"
+description = "GitHub Fine-grained Personal Access Token"
+regex = '''github_pat_[0-9A-Za-z_]{22,}'''
 tags = ["key", "github"]
 
 [[rules]]
@@ -20,6 +30,48 @@ id = "aws-access-token"
 description = "AWS Access Key"
 regex = '''\b(AKIA|ASIA)[0-9A-Z]{16}\b'''
 tags = ["key", "aws"]
+
+[[rules]]
+id = "gcp-api-key"
+description = "Google Cloud API Key"
+regex = '''\bAIza[0-9A-Za-z\-_]{35}\b'''
+tags = ["key", "gcp"]
+
+[[rules]]
+id = "azure-storage-account-key"
+description = "Azure Storage Account connection string (AccountKey)"
+regex = '''AccountKey=[A-Za-z0-9+/]{86}=='''
+tags = ["key", "azure"]
+
+[[rules]]
+id = "stripe-secret-key"
+description = "Stripe secret/restricted API key (live)"
+regex = '''\b(sk|rk)_live_[0-9A-Za-z]{24,}\b'''
+tags = ["key", "stripe"]
+
+[[rules]]
+id = "slack-token"
+description = "Slack token (bot/user/app/legacy)"
+regex = '''\bxox[baprs]-[0-9A-Za-z-]{10,72}\b'''
+tags = ["key", "slack"]
+
+[[rules]]
+id = "sendgrid-api-key"
+description = "SendGrid API Key"
+regex = '''\bSG\.[0-9A-Za-z_\-]{22}\.[0-9A-Za-z_\-]{43}\b'''
+tags = ["key", "sendgrid"]
+
+[[rules]]
+id = "npm-access-token"
+description = "npm access token"
+regex = '''\bnpm_[0-9A-Za-z]{36}\b'''
+tags = ["key", "npm"]
+
+[[rules]]
+id = "jwt-token"
+description = "JSON Web Token literal (header+payload+assinatura codificados)"
+regex = '''\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b'''
+tags = ["key", "jwt", "generic"]
 
 [[rules]]
 id = "private-key"

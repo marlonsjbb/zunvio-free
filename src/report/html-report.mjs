@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { apoiosDaDecisao, descreverApoios, TITULO_APOIOS } from './apoios.mjs';
 import { validarEvidencePackV0 } from '../schema/validador-schema.mjs';
 import { redigirTexto } from '../utils/redactor.mjs';
 import { TERMOS_GLOSSARIO } from '../glossary/termos.mjs';
@@ -42,8 +43,8 @@ const ORIGENS_CONCLUSAO = Object.freeze({
 
 const PROXIMAS_ACOES = Object.freeze({
   segredos: 'Remova e rotacione as credenciais expostas; depois execute a análise novamente.',
-  seguranca_estatica: 'Corrija os achados de segurança estática e gere uma nova prova de análise.',
-  funcionamento: 'Forneça resultados de testes executados em ambiente controlado e vinculados à release.',
+  seguranca_estatica: 'Corrija o que for risco no código; um item em revisão que não é risco neste contexto pode ter a revisão registrada (npx zunvio-score revisar). Depois analise de novo.',
+  funcionamento: 'Declare como o projeto foi testado respondendo a "npx zunvio-score init" e analise de novo.',
   integridade: 'Repita a análise sobre uma cópia limpa e preserve o digest do início ao fim.',
   proveniencia_auditabilidade: 'Informe e comprove o commit exato da release que será avaliada.',
   impacto_delta: 'Disponibilize o diff Git da release e execute novamente a análise de impacto.',
@@ -132,6 +133,9 @@ function impactoDoGate(gate) {
 
 function construirBloqueadores(evidencePack) {
   const gates = Array.isArray(evidencePack.decision?.gates) ? evidencePack.decision.gates : [];
+  // E2E mínimo: segurança estática não comprovada porque arquivos foram lidos só em parte — a ação é a lista.
+  const lidosEmParte = Array.isArray(evidencePack.scanners?.semgrep?.leituraParcial) ? evidencePack.scanners.semgrep.leituraParcial.length : 0;
+  const porLeituraParcial = (gate) => gate.id === 'seguranca_estatica' && gate.estado === 'NAO_COMPROVADO' && lidosEmParte > 0;
   const bloqueadoresGate = gates
     .map((gate, indice) => ({ ...gate, indice }))
     .filter((gate) => gate.obrigatorio === true && ['NAO_ATENDE', 'NAO_COMPROVADO'].includes(gate.estado))
@@ -151,9 +155,12 @@ function construirBloqueadores(evidencePack) {
       titulo: gate.nome || gate.id || 'Verificação obrigatória',
       status: gate.estado,
       causa: gate.motivo || 'A prova obrigatória não foi conclusiva.',
-      impacto: impactoDoGate(gate),
-      proximaAcao: PROXIMAS_ACOES[gate.id]
-        || 'Forneça uma prova externa controlada e execute a análise novamente.',
+      impacto: porLeituraParcial(gate)
+        ? `O analisador leu ${lidosEmParte} arquivo(s) só em parte: a ausência de achados nesses trechos não comprova ausência de problemas.`
+        : impactoDoGate(gate),
+      proximaAcao: porLeituraParcial(gate)
+        ? 'Veja "Código lido só em parte" nos detalhes técnicos: cada arquivo aparece com o trecho que o analisador não reconheceu e como resolver. Ajuste e repita a análise.'
+        : PROXIMAS_ACOES[gate.id] || 'Forneça uma prova externa controlada e execute a análise novamente.',
       evidencias: Array.isArray(gate.evidencias) ? gate.evidencias : []
     }));
 
@@ -293,6 +300,29 @@ function renderGates(evidencePack) {
   }).join('\n');
 }
 
+// PL-03 (fechamento): o significado do achado em linguagem humana, com a evidência expansível.
+const ROTULO_SIGNIFICADO = {
+  RISCO_DEMONSTRADO: 'Risco demonstrado · Impede a publicação',
+  REVISAO_NECESSARIA: 'Revisão necessária · Risco não demonstrado',
+  INFORMATIVO: 'Informativo · Não impede a publicação'
+};
+const ROTULO_ESTADO_PROPRIEDADE = {
+  DEMONSTRADA: 'demonstrada', AUSENTE: 'ausente (demonstrado)', NAO_DEMONSTRADA: 'não demonstrada', RECUSADA: 'recusada'
+};
+
+function renderEvidenciaDoSignificado(finding) {
+  const s = finding.significado;
+  if (!s || typeof s !== 'object') return '';
+  const itens = [
+    ...(Array.isArray(s.propriedades) ? s.propriedades.map((p) => `${p?.nome}: ${ROTULO_ESTADO_PROPRIEDADE[p?.estado] || p?.estado}${p?.evidencia ? ` — ${p.evidencia}` : ''}`) : []),
+    ...(finding.identidadeSimbolo ? [`Identidade do símbolo: ${finding.identidadeSimbolo.status}${finding.identidadeSimbolo.forma ? ` (${finding.identidadeSimbolo.forma})` : ''}`] : []),
+    ...(s.contexto ? [`Contexto do arquivo: ${s.contexto.naturezaArquivo} (registrado, não decisivo)`] : []),
+    ...(typeof s.razao === 'string' ? [`Razão: ${s.razao}`] : []),
+    ...(Array.isArray(s.limitacoes) ? s.limitacoes.map((l) => `Limite da análise: ${l}`) : [])
+  ];
+  return `<details><summary>Ver evidência</summary><ul>${itens.map((i) => `<li>${escaparHtml(i)}</li>`).join('')}</ul></details>`;
+}
+
 function renderFindings(evidencePack) {
   const findings = Array.isArray(evidencePack.canonicalContent?.findings)
     ? evidencePack.canonicalContent.findings
@@ -305,10 +335,58 @@ function renderFindings(evidencePack) {
     const linha = inteiroSeguro(finding.startLine, 0, 0);
     return `<article class="finding">
       <span class="finding__index">${String(indice + 1).padStart(2, '0')}</span>
-      <div><strong>${escaparHtml(finding.ruleId || 'regra não identificada', 180)}</strong><p>${escaparHtml(finding.message)}</p><p>Detectado · Necessita revisão</p><code>${escaparHtml(caminho || '[arquivo não identificado]', 240)}${linha ? `:${linha}` : ''}</code></div>
+      <div><strong>${escaparHtml(finding.ruleId || 'regra não identificada', 180)}</strong><p>${escaparHtml(finding.message)}</p>${ROTULO_SIGNIFICADO[finding.significado?.classe] ? `<p>Detectado · <strong>${escaparHtml(ROTULO_SIGNIFICADO[finding.significado.classe], 120)}</strong></p>` : '<p>Detectado · Necessita revisão</p>'}${renderRevisaoDoAchado(finding)}<code>${escaparHtml(caminho || '[arquivo não identificado]', 240)}${linha ? `:${linha}` : ''}</code>${renderEvidenciaDoSignificado(finding)}</div>
       <span class="severity">${escaparHtml(finding.severity || 'INFO', 24)}</span>
     </article>`;
   }).join('\n');
+}
+
+// E2E mínimo: revisão humana registrada é evidência adicional — nunca "risco não existe" nem "segurança comprovada".
+function renderRevisaoDoAchado(finding) {
+  const r = finding.revisaoHumana;
+  if (!r || r.estado !== 'ACEITA') return '';
+  return `<p class="review"><strong>Revisado por humano e aceito neste contexto</strong> — ${escaparHtml(r.autor, 80)}, ${escaparHtml(r.data, 20)}: “${escaparHtml(r.justificativa, 400)}”. Não impede a publicação; não é prova de ausência de risco.</p>`;
+}
+
+const ROTULO_ESTADO_REVISAO = Object.freeze({
+  ACEITA: 'Aceita neste contexto (o item deixou de impedir a publicação)',
+  OBSOLETA: 'Obsoleta: o código em volta mudou; precisa de nova revisão',
+  NAO_APLICAVEL: 'Sem efeito: o item passou a ter risco demonstrado',
+  SEM_ACHADO: 'Sem efeito: o item não aparece mais nesta análise'
+});
+function renderApoios(evidencePack) {
+  const linhas = descreverApoios(apoiosDaDecisao(evidencePack), (t) => escaparHtml(t, 120));
+  if (linhas.length === 0) return '';
+  return `<div class="apoios"><p><strong>${escaparHtml(TITULO_APOIOS)}</strong></p><ul class="plain">${linhas.map((l) => `<li>${l}</li>`).join('')}</ul></div>`;
+}
+
+function renderRevisoesHumanas(evidencePack) {
+  const lista = Array.isArray(evidencePack.canonicalContent?.humanReviews) ? evidencePack.canonicalContent.humanReviews : [];
+  const erroBaseline = evidencePack.scanners?.semgrep?.erroBaseline || evidencePack.scanners?.['zunvio-segredos']?.erroBaseline;
+  const aviso = erroBaseline
+    ? `<p class="review"><strong>Atenção:</strong> ${escaparHtml(erroBaseline, 240)} Nenhuma revisão nem aceite desse arquivo foi aplicado nesta análise.</p>`
+    : '';
+  if (lista.length === 0) {
+    return aviso ? `<section aria-labelledby="titulo-revisoes"><div class="section-heading"><div><p class="eyebrow">Decisões humanas</p><h2 id="titulo-revisoes">Revisões registradas pelo responsável</h2></div></div>${aviso}</section>` : '';
+  }
+  const itens = lista.map((r) => `<li><code>${escaparHtml(r.arquivo || r.chaveRevisao, 200)}</code> — ${escaparHtml(ROTULO_ESTADO_REVISAO[r.estado] || r.estado, 120)}. Revisor: ${escaparHtml(r.autor, 80)} em ${escaparHtml(r.data, 20)}. Justificativa: “${escaparHtml(r.justificativa, 400)}”</li>`).join('');
+  return `<section aria-labelledby="titulo-revisoes">
+      <div class="section-heading">
+        <div><p class="eyebrow">Decisões humanas</p><h2 id="titulo-revisoes">Revisões registradas pelo responsável</h2></div>
+        <p>Uma revisão humana é uma decisão de quem conhece o projeto, registrada com nome e justificativa. Ela não apaga o item nem prova que o risco não existe; só vale enquanto o trecho revisado não mudar.</p>
+      </div>
+      <ul class="plain">${itens}</ul>
+    </section>`;
+}
+
+// E2E mínimo: onde a análise do código foi parcial (arquivo, linha, trecho), e a correção quando demonstrável.
+function renderLeituraParcial(evidencePack) {
+  const lista = Array.isArray(evidencePack.scanners?.semgrep?.leituraParcial) ? evidencePack.scanners.semgrep.leituraParcial : [];
+  if (lista.length === 0) return '';
+  const itens = lista.map((p) => `<li><code>${escaparHtml(p.arquivo, 240)}${Number.isInteger(p.linha) ? `:${p.linha}` : ''}</code>${p.trecho ? ` — o analisador não reconheceu “${escaparHtml(p.trecho, 80)}”` : ''}${p.dica ? `<br><span class="muted">${escaparHtml(p.dica, 300)}</span>` : ''}</li>`).join('');
+  return `<h3 class="subheading">Código lido só em parte</h3>
+          <p>Nestes arquivos a análise de segurança do código não foi completa; por isso ela não pode ser dada como comprovada.</p>
+          <ul>${itens}</ul>`;
 }
 
 function renderLimitacoesTecnicas(evidencePack) {
@@ -319,7 +397,10 @@ function renderLimitacoesTecnicas(evidencePack) {
   const limitations = Array.isArray(canonical.limitations) ? canonical.limitations : [];
   const itens = [
     ...checks.map((item) => `Verificação não executada: ${item}`),
-    ...limitations
+    // Fatia 1: limitações estruturadas (0.3.0) viram frase humana; strings legadas (0.2.0) seguem como estão.
+    ...limitations.map((l) => (l && typeof l === 'object'
+      ? [l.whatWasNotVerified, l.impact].filter((t) => typeof t === 'string' && t).join(' ')
+      : l))
   ];
   if (itens.length === 0) return '<li>Nenhuma limitação operacional adicional foi registrada.</li>';
   return [...new Set(itens.map((item) => textoSeguro(item)).filter(Boolean))]
@@ -441,6 +522,11 @@ function construirCss() {
     .proof-row p, .proof-row ul { color: var(--cream-muted); }
     .finding { display: grid; grid-template-columns: 42px minmax(0,1fr) auto; gap: 14px; padding: 16px 0; border-top: 1px solid var(--line); }
     .finding p { margin: 4px 0; color: var(--cream-muted); }
+    .finding p.review { border-left: 3px solid var(--line); padding-left: 10px; }
+    ul.plain { margin: 0; padding-left: 20px; color: var(--cream-muted); }
+    ul.plain li { margin: 6px 0; }
+    .apoios { max-width: 760px; margin: 18px 0 0; padding: 12px 16px; border: 1px solid var(--line); border-radius: 8px; }
+    .apoios p { margin: 0 0 6px; }
     .finding__index { color: var(--teal); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     .severity { color: var(--warn); font-size: .72rem; font-weight: 850; }
     .terms { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; }
@@ -562,6 +648,7 @@ export function gerarRelatorioHtml(evidencePack) {
       <p class="eyebrow">${escaparHtml(decisao.eyebrow, 90)}</p>
       <h1 id="titulo-relatorio">${escaparHtml(decisao.titulo, 180)}</h1>
       <p class="lede">${escaparHtml(decisao.resumo)}</p>
+      ${renderApoios(evidencePack)}
       <div class="metrics" aria-label="Indicadores principais">
         <div class="metric">
           <span class="metric__label">Quanto conseguimos comprovar</span>
@@ -596,6 +683,16 @@ export function gerarRelatorioHtml(evidencePack) {
       <div class="action-list">${renderBloqueadores(bloqueadores)}</div>
     </section>
 
+    <section aria-labelledby="titulo-achados">
+      <div class="section-heading">
+        <div><p class="eyebrow">O que encontramos</p><h2 id="titulo-achados">Achados no código e nos segredos</h2></div>
+        <p>Cada item diz o que foi observado e o que ele significa para a publicação. Abra “Ver evidência” para o detalhe técnico.</p>
+      </div>
+      <div>${renderFindings(evidencePack)}</div>
+    </section>
+
+    ${renderRevisoesHumanas(evidencePack)}
+
     <section aria-labelledby="titulo-informacoes">
       <div class="section-heading">
         <div><p class="eyebrow">Informações e provas</p><h2 id="titulo-informacoes">As 12 informações da publicação</h2></div>
@@ -615,6 +712,7 @@ export function gerarRelatorioHtml(evidencePack) {
           <dl class="proof-meta">
             <div><dt>Release completa</dt><dd><code>${escaparHtml(release || 'Não identificada no Evidence Pack', 80)}</code></dd></div>
             <div><dt>Versão do método</dt><dd>Evidence Pack v${versaoMetodo} · HTML v${VERSAO_RELATORIO_HTML}</dd></div>
+            <div><dt>Motor</dt><dd>${escaparHtml(evidencePack.canonicalContent?.execution?.engine?.name || 'zunvio-score', 40)} ${escaparHtml(evidencePack.canonicalContent?.execution?.engine?.version || '?', 20)}${evidencePack.canonicalContent?.execution?.engine?.commit ? ` · <code>${escaparHtml(String(evidencePack.canonicalContent.execution.engine.commit).slice(0, 12), 12)}</code>` : ''}</dd></div>
             <div><dt>Hash canônico do Evidence Pack</dt><dd><code>${hash}</code></dd></div>
             <div><dt>Arquivos avaliados</dt><dd>${arquivos}</dd></div>
             <div><dt>Achados técnicos</dt><dd>${totalAchados}</dd></div>
@@ -627,8 +725,7 @@ export function gerarRelatorioHtml(evidencePack) {
           <h3 class="subheading">Portões e provas técnicas</h3>
           <div>${renderGates(evidencePack)}</div>
 
-          <h3 class="subheading">Achados registrados</h3>
-          <div>${renderFindings(evidencePack)}</div>
+          ${renderLeituraParcial(evidencePack)}
 
           <h3 class="subheading">Limitações operacionais registradas</h3>
           <ul>${renderLimitacoesTecnicas(evidencePack)}</ul>
@@ -658,12 +755,11 @@ export function gerarRelatorioHtml(evidencePack) {
   <footer class="footer">
     <div class="shell footer__inner">
       <p><strong>ZUNVIO</strong><br>Confiança antes de publicar.</p>
-      <nav class="footer__links" aria-label="Próximos recursos">
-        <a class="button" href="https://zunvio.com.br/glossario" rel="noreferrer noopener">Glossário completo</a>
-        <a class="button button--accent" href="https://zunvio.com.br/analise" rel="noreferrer noopener">Conhecer análise aprofundada</a>
+      <nav class="footer__links" aria-label="ZUNVIO">
+        <a class="button" href="https://zunvio.com.br/" rel="noreferrer noopener">zunvio.com.br</a>
       </nav>
     </div>
-    <p class="muted" style="text-align:center;margin:0 0 8px">Os recursos acima dependem da publicação do site (MASS-91) e podem ainda não estar disponíveis.</p>
+    <p class="muted" style="text-align:center;margin:0 0 8px">Relatório gerado localmente a partir do Evidence Pack indicado acima; nenhum dado foi enviado.</p>
   </footer>
 </body>
 </html>`;

@@ -1,6 +1,9 @@
 import { validarEvidencePackV0 } from '../schema/validador-schema.mjs';
 import { calcularHashCanonico } from '../utils/canonical-json.mjs';
 import { COBERTURA_MINIMA_PUBLICACAO, OUTCOME_CANONICO } from '../decision/evaluator.mjs';
+import { ausenciaNaoComprova, temModeloDeCompletude } from '../models/completeness.mjs';
+import packageJson from '../../package.json' with { type: 'json' };
+import { problemasDaRevisaoSelada } from '../models/human-review.mjs';
 
 // Resultado de verificação de um Score Receipt (Evidence Pack) por terceiro.
 // O verificador não reexecuta scanners, não acessa rede, não executa código do
@@ -18,12 +21,28 @@ export const RESULTADO = Object.freeze({
 
 export const ROTULO_INTEGRIDADE_INTERNA = 'INTEGRIDADE E COERÊNCIA INTERNAS VÁLIDAS — ORIGEM NÃO AUTENTICADA';
 
-const VERSAO_SUPORTADA = '0.2.0';
+// Receipts emitidos pelo CLI usam a versão do produto declarada no package.json.
+// A versão 0.2.0 do schema permanece aceita para verificar receipts já emitidos.
+// Fatia 1 (Scanner Completeness): 0.3.0 acrescenta completude por scanner.
+// PL-03 (fechamento): 0.4.0 acrescenta o significado selado por achado.
+// PL-02: 0.5.0 acrescenta o universo esperado por scanner na completude.
+// LC-06: 0.7.0 acrescenta o sensor de segredos em duas partes (scanner próprio + Gitleaks só no histórico).
+const VERSOES_SUPORTADAS = new Set([packageJson.version, '0.1.0', '0.2.0', '0.3.0', '0.4.0', '0.5.0', '0.6.0', '0.7.0', '0.8.0']);
 const COMPLETUDES_VALIDAS = new Set(['CLEAN', 'WITH_FINDINGS', 'NOT_STARTED', 'FAILED']);
-const STATUS_SENSOR_VALIDOS = new Set(['SUCCESS', 'UNAVAILABLE', 'ERROR', 'TIMEOUT', 'BUFFER_OVERFLOW']);
+// LC-06: NOT_RUN = o Gitleaks não tinha histórico a varrer (alvo sem repositório, ou subdiretório de um).
+const STATUS_SENSOR_VALIDOS = new Set(['SUCCESS', 'UNAVAILABLE', 'ERROR', 'TIMEOUT', 'BUFFER_OVERFLOW', 'NOT_RUN']);
 const SEVERIDADES_VALIDAS = new Set(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']);
+const CATEGORIAS_ACHADO_VALIDAS = new Set([
+  'CODIGO_PROPRIO', 'TERCEIROS_DEPENDENCIAS', 'TESTES_FIXTURES', 'ARTEFATOS_GERADOS'
+]);
+const STATUS_VALIDACAO_ACHADO_VALIDOS = new Set(['NECESSITA_REVISAO', 'CONFIRMADO']);
+const STATUS_IDENTIDADE_SIMBOLO_VALIDOS = new Set(['CONFIRMADA', 'RECUSADA', 'NAO_DETERMINADA']);
 const HEX64 = /^[a-f0-9]{64}$/;
 const SENSORES_CANONICOS = ['gitleaks', 'semgrep'];
+// LC-06 (0.7.0 e a projeção da CLI que o carrega): o scanner próprio de segredos também é canônico.
+const temSegredosProprio = (receipt) => receipt?.versao === '0.7.0' || receipt?.versao === '0.8.0'
+  || (ehObjeto(receipt?.canonicalContent?.scannersSummary) && Object.hasOwn(receipt.canonicalContent.scannersSummary, 'zunvio-segredos'));
+const sensoresCanonicos = (receipt) => (temSegredosProprio(receipt) ? ['gitleaks', 'zunvio-segredos', 'semgrep'] : SENSORES_CANONICOS);
 // B4: mapeia cada sensor canônico ao portão que o evaluator deriva dele.
 const SENSOR_GATE = Object.freeze({ gitleaks: 'segredos', semgrep: 'seguranca_estatica' });
 
@@ -115,9 +134,14 @@ function validarIntegridade(receipt, motivos) {
     motivos.push('integrityProof.differences deve ser array');
   }
 
-  // Vínculo do inventário selado com o digest inicial da prova de integridade.
-  if (ehObjeto(cc) && typeof cc.inventoryDigest === 'string' && cc.inventoryDigest !== initial) {
-    motivos.push('inventoryDigest diverge do initialDigest');
+  // O inventário dos scanners pode ter perímetro reduzido (vendor/gerados
+  // excluídos). Packs atuais selam o digest do alvo completo em targetDigest;
+  // packs anteriores mantêm o vínculo legado via inventoryDigest.
+  const digestAlvoSelado = ehObjeto(cc) && typeof cc.targetDigest === 'string'
+    ? cc.targetDigest
+    : cc?.inventoryDigest;
+  if (typeof digestAlvoSelado === 'string' && digestAlvoSelado !== initial) {
+    motivos.push('targetDigest diverge do initialDigest');
   }
 
   const digestsIguais = typeof initial === 'string' && typeof final === 'string' && initial === final;
@@ -138,7 +162,7 @@ function validarIntegridade(receipt, motivos) {
 // máquina de estados usada pelo scanner em `classificarCompletude`).
 function completudeEsperada(status, totalAchados) {
   if (status === 'SUCCESS') return totalAchados > 0 ? 'WITH_FINDINGS' : 'CLEAN';
-  if (status === 'UNAVAILABLE') return 'NOT_STARTED';
+  if (status === 'UNAVAILABLE' || status === 'NOT_RUN') return 'NOT_STARTED';
   return 'FAILED';
 }
 
@@ -154,15 +178,16 @@ function validarSensores(receipt) {
   }
 
   // B4: somente os sensores canônicos esperados.
+  const canonicos = sensoresCanonicos(receipt);
   for (const chave of Object.keys(scannersSummary)) {
-    if (!SENSORES_CANONICOS.includes(chave)) {
+    if (!canonicos.includes(chave)) {
       motivos.push(`sensor extra não canônico: "${chave}"`);
     }
   }
 
   const achados = Array.isArray(canonicalContent.findings) ? canonicalContent.findings : null;
 
-  for (const chave of SENSORES_CANONICOS) {
+  for (const chave of canonicos) {
     const sensor = scannersSummary[chave];
     if (!ehObjeto(sensor)) {
       motivos.push(`identidade do sensor "${chave}" ausente`);
@@ -251,7 +276,7 @@ function validarAchadosCanonicos(receipt) {
       motivos.push(`achado canônico[${indice}] não é objeto`);
       continue;
     }
-    if (typeof a.scanner !== 'string' || !SENSORES_CANONICOS.includes(a.scanner)) {
+    if (typeof a.scanner !== 'string' || !sensoresCanonicos(receipt).includes(a.scanner)) {
       motivos.push(`achado canônico[${indice}] com scanner desconhecido ou inválido`);
     }
     if (typeof a.ruleId !== 'string') {
@@ -263,6 +288,15 @@ function validarAchadosCanonicos(receipt) {
     if (typeof a.filePath !== 'string') {
       motivos.push(`achado canônico[${indice}] sem filePath canônico`);
     }
+    if (a.categoria !== undefined && !CATEGORIAS_ACHADO_VALIDAS.has(a.categoria)) {
+      motivos.push(`achado canônico[${indice}] com categoria inválida`);
+    }
+    if (a.estadoDeteccao !== undefined && a.estadoDeteccao !== 'DETECTADO') {
+      motivos.push(`achado canônico[${indice}] com estado de detecção inválido`);
+    }
+    if (a.statusValidacao !== undefined && !STATUS_VALIDACAO_ACHADO_VALIDOS.has(a.statusValidacao)) {
+      motivos.push(`achado canônico[${indice}] com status de validação inválido`);
+    }
     if (typeof a.startLine !== 'number') {
       motivos.push(`achado canônico[${indice}] sem startLine numérico`);
     }
@@ -271,6 +305,10 @@ function validarAchadosCanonicos(receipt) {
     }
     if (typeof a.message !== 'string') {
       motivos.push(`achado canônico[${indice}] sem message canônica`);
+    }
+    // PL-03 · Fatia 1: quando presente, a identidade de símbolo selada precisa ter status reconhecido.
+    if (a.identidadeSimbolo !== undefined && (!ehObjeto(a.identidadeSimbolo) || !STATUS_IDENTIDADE_SIMBOLO_VALIDOS.has(a.identidadeSimbolo.status))) {
+      motivos.push(`achado canônico[${indice}] com identidadeSimbolo inválida`);
     }
   }
   if (typeof canonicalContent.findingsCount !== 'number' || canonicalContent.findingsCount !== achados.length) {
@@ -290,23 +328,88 @@ function validarReconciliacaoSensorGate(receipt) {
   if (!ehObjeto(scannersSummary) || !Array.isArray(gates)) return motivos;
   const achados = Array.isArray(cc.findings) ? cc.findings : [];
 
+  // LC-06 (0.7.0): o portão Segredos deriva das DUAS partes do sensor (reconciliação própria abaixo).
+  const segredosProprio = temSegredosProprio(receipt);
+  if (segredosProprio) motivos.push(...reconciliarPortaoSegredos07(cc, achados));
+  // 0.8.0, ou a projeção --json da CLI que carrega as revisões do pack de onde veio (o validador já exigiu coerência).
+  const comRevisaoHumana = receipt.versao === '0.8.0'
+    || (receipt?.outputProjection?.code === 'SAFE_FINGERPRINTED_V1' && receipt.versao === packageJson.version && Array.isArray(cc.humanReviews));
   for (const [sensorId, gateId] of Object.entries(SENSOR_GATE)) {
+    if (segredosProprio && gateId === 'segredos') continue;
     const sensor = scannersSummary[sensorId];
     const gate = gates.find((g) => ehObjeto(g) && g.id === gateId);
     if (!ehObjeto(sensor) || !ehObjeto(gate)) continue;
 
-    const totalAchados = achados.filter((a) => ehObjeto(a) && a.scanner === sensorId).length;
+    // PL-03: conta só o que BLOQUEIA — o efeito selado no significado (INFORMATIVO não bloqueia) e a identidade
+    // de símbolo recusada (Fatia 1), espelhando achadoBloqueiaCodigoProprio. A coerência classe↔efeito do
+    // significado é exigida pelo validador do pack 0.4.0, então o efeito não pode ser rebaixado isoladamente.
+    const totalAchados = achados.filter((a) => ehObjeto(a)
+      && a.scanner === sensorId
+      && a.categoria !== 'TERCEIROS_DEPENDENCIAS'
+      && a.categoria !== 'ARTEFATOS_GERADOS'
+      && a.significado?.efeitoNaDecisao !== 'NAO_BLOQUEIA'
+      && a.identidadeSimbolo?.status !== 'RECUSADA'
+      // E2E mínimo (0.8.0): revisão humana ACEITA e coerente (REVISAO_NECESSARIA, chave e contexto) deixa de bloquear,
+      // espelhando achadoBloqueiaCodigoProprio; o validador já recusou revisão incoerente ou fora do 0.8.0.
+      && !(comRevisaoHumana && a.revisaoHumana?.estado === 'ACEITA' && problemasDaRevisaoSelada(a).length === 0)).length;
+    // Fatia 1 (Scanner Completeness): sem achado e com completude não comprovada
+    // (0.3.0), a ausência não comprova atendimento — o portão coerente é
+    // NAO_COMPROVADO/MOTOR_FALHOU, espelhando a regra do avaliador.
+    // PL-01 + PL-04 (0.6.0): sensor sem sinal de cobertura (sem modelo de completude) também não sustenta ATENDE — o
+    // portão coerente é NAO_COMPROVADO/FORA_DE_COBERTURA_DO_MOTOR. Packs até 0.5.0 seguem a regra da época.
+    const semCoberturaComprovavel = receipt.versao === '0.6.0'
+      && ehObjeto(sensor.completeness) && !temModeloDeCompletude(sensor.completeness);
     const estadoEsperado = sensor.status === 'SUCCESS'
-      ? (totalAchados > 0 ? 'NAO_ATENDE' : 'ATENDE')
+      ? (totalAchados > 0 ? 'NAO_ATENDE' : ((ausenciaNaoComprova(sensor.completeness) || semCoberturaComprovavel) ? 'NAO_COMPROVADO' : 'ATENDE'))
       : 'NAO_COMPROVADO';
+    const subcausaEsperada = sensor.status === 'SUCCESS' && totalAchados === 0 && semCoberturaComprovavel
+      ? 'FORA_DE_COBERTURA_DO_MOTOR'
+      : 'MOTOR_FALHOU';
+
+    // A projeção --json da CLI (versao = produto) não diz de qual versão de pack veio — como nas demais regras por
+    // versão, aceita os dois estados coerentes para sensor sem sinal de cobertura: ATENDE (até 0.5.0) ou
+    // NAO_COMPROVADO/FORA_DE_COBERTURA_DO_MOTOR (0.6.0). O pack em si (o que o SaaS ingere) exige a regra da versão.
+    const ehProjecao = receipt?.outputProjection?.code === 'SAFE_FINGERPRINTED_V1';
+    if (ehProjecao && sensor.status === 'SUCCESS' && totalAchados === 0
+      && ehObjeto(sensor.completeness) && !temModeloDeCompletude(sensor.completeness)
+      && gate.estado === 'NAO_COMPROVADO' && gate.subcausa === 'FORA_DE_COBERTURA_DO_MOTOR') {
+      continue;
+    }
 
     if (gate.estado !== estadoEsperado) {
       motivos.push(`gate "${gateId}" incoerente com o sensor "${sensorId}": sensor ${sensor.status} com ${totalAchados} achado(s) exige "${estadoEsperado}", recebido "${gate.estado}"`);
-    } else if (estadoEsperado === 'NAO_COMPROVADO' && gate.subcausa !== 'MOTOR_FALHOU') {
-      motivos.push(`gate "${gateId}" NAO_COMPROVADO por sensor deve usar subcausa MOTOR_FALHOU`);
+    } else if (estadoEsperado === 'NAO_COMPROVADO' && gate.subcausa !== subcausaEsperada) {
+      motivos.push(`gate "${gateId}" NAO_COMPROVADO por sensor deve usar subcausa ${subcausaEsperada}`);
     }
   }
   return motivos;
+}
+
+// LC-06: estado do portão Segredos derivado SÓ de campos selados — mesma regra do avaliador (avaliarPortaoSegredos):
+// achado que bloqueia (depois da baseline) ⇒ NAO_ATENDE; sensor falho ou working tree incompleto ⇒ NAO_COMPROVADO/
+// MOTOR_FALHOU; histórico não demonstrado ⇒ NAO_COMPROVADO/FORA_DE_COBERTURA_DO_MOTOR; achado suprimido pela baseline
+// do projeto ⇒ NAO_COMPROVADO/SEM_EVIDENCIA_DO_CLIENTE; senão ATENDE.
+function reconciliarPortaoSegredos07(cc, achados) {
+  const s = cc.scannersSummary;
+  const arvore = s['zunvio-segredos'];
+  const historico = s.gitleaks;
+  const gate = Array.isArray(cc.decision?.gates) ? cc.decision.gates.find((g) => ehObjeto(g) && g.id === 'segredos') : null;
+  if (!ehObjeto(arvore) || !ehObjeto(historico) || !ehObjeto(gate)) return ['portão Segredos ou sensores de segredos ausentes'];
+  const bloqueia = (id) => achados.filter((a) => ehObjeto(a) && a.scanner === id
+    && a.categoria !== 'TERCEIROS_DEPENDENCIAS' && a.categoria !== 'ARTEFATOS_GERADOS'
+    && a.significado?.efeitoNaDecisao !== 'NAO_BLOQUEIA' && a.identidadeSimbolo?.status !== 'RECUSADA').length;
+  const supr = (x) => (ehObjeto(x.suppressedByBaseline) ? x.suppressedByBaseline : { count: 0, blocking: 0 });
+  const remanescentes = bloqueia('zunvio-segredos') + bloqueia('gitleaks') - supr(arvore).blocking - supr(historico).blocking;
+  let estado = 'ATENDE';
+  let subcausa = null;
+  if (remanescentes > 0) estado = 'NAO_ATENDE';
+  else if (arvore.status !== 'SUCCESS' || !['SUCCESS', 'NOT_RUN'].includes(historico.status)) { estado = 'NAO_COMPROVADO'; subcausa = 'MOTOR_FALHOU'; }
+  else if (arvore.completeness?.status !== 'COMPLETE') { estado = 'NAO_COMPROVADO'; subcausa = 'MOTOR_FALHOU'; }
+  else if (historico.completeness?.status !== 'COMPLETE') { estado = 'NAO_COMPROVADO'; subcausa = 'FORA_DE_COBERTURA_DO_MOTOR'; }
+  else if (supr(arvore).count + supr(historico).count > 0) { estado = 'NAO_COMPROVADO'; subcausa = 'SEM_EVIDENCIA_DO_CLIENTE'; }
+  if (gate.estado !== estado) return [`gate "segredos" incoerente com os sensores de segredos (working tree + histórico): exige "${estado}", recebido "${gate.estado}"`];
+  if (estado === 'NAO_COMPROVADO' && gate.subcausa !== subcausa) return [`gate "segredos" NAO_COMPROVADO deve usar subcausa ${subcausa}`];
+  return [];
 }
 
 // Valida a coerência interna entre score, cobertura, gates e decisão usando as
@@ -387,8 +490,13 @@ function validarCoerencia(receipt, integridadeOk) {
   if (decisao.score !== scoreEsperado) {
     motivos.push(`score incoerente: declarado ${decisao.score}, esperado ${scoreEsperado}`);
   }
-  if (decisao.coverage !== coberturaEsperada) {
-    motivos.push(`cobertura incoerente: declarada ${decisao.coverage}, esperada ${coberturaEsperada}`);
+  const coberturaContrato = receipt?.canonicalContent?.publicationContextCoverage
+    ?? receipt?.canonicalContent?.claimEvidenceMap?.coverage;
+  const coberturaFinalEsperada = Number.isInteger(coberturaContrato)
+    ? Math.min(coberturaEsperada, coberturaContrato)
+    : coberturaEsperada;
+  if (decisao.coverage !== coberturaFinalEsperada) {
+    motivos.push(`cobertura incoerente: declarada ${decisao.coverage}, esperada ${coberturaFinalEsperada}`);
   }
   if (decisao.maxPossibleScore !== maximoEsperado) {
     motivos.push(`maxPossibleScore incoerente: declarado ${decisao.maxPossibleScore}, esperado ${maximoEsperado}`);
@@ -403,7 +511,7 @@ function validarCoerencia(receipt, integridadeOk) {
   //              cobertura, evidência do cliente ausente, integridade não
   //              comprovada) ou cobertura abaixo do mínimo.
   //   - ACCEPT:  todos os obrigatórios ATENDE, cobertura mínima e integridade OK.
-  const coberturaInsuficiente = coberturaEsperada < COBERTURA_MINIMA_PUBLICACAO;
+  const coberturaInsuficiente = coberturaFinalEsperada < COBERTURA_MINIMA_PUBLICACAO;
   let outcomeEsperado;
   if (temBloqueadorComprovado || !integridadeOk) {
     outcomeEsperado = OUTCOME_CANONICO.REJECT;
@@ -439,7 +547,7 @@ export function verificarReceipt(receipt) {
   }
 
   const versao = receipt.versao;
-  if (versao !== VERSAO_SUPORTADA) {
+  if (!VERSOES_SUPORTADAS.has(versao)) {
     const motivo = versao === undefined
       ? 'versão ausente'
       : `versão não suportada: ${versao}`;
@@ -456,7 +564,13 @@ export function verificarReceipt(receipt) {
   const motivos = [];
 
   const sha = extrairShaRelease(receipt);
-  if (!sha) {
+  const gateProveniencia = receipt.canonicalContent?.decision?.gates?.find(
+    (gate) => gate?.id === 'proveniencia_auditabilidade'
+  );
+  // Um alvo sem Git pode produzir um receipt internamente íntegro, mas sua
+  // decisão permanece inconclusiva pelo gate obrigatório NAO_COMPROVADO. SHA
+  // auditável só é obrigatório quando o próprio gate declara ATENDE.
+  if (!sha && gateProveniencia?.estado === 'ATENDE') {
     motivos.push('release/HEAD ausente ou sem vínculo auditável');
   }
 

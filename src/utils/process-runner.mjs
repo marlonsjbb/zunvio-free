@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 
 const BUFFER_MAXIMO_PADRAO = 5 * 1024 * 1024; // 5MB
 const TIMEOUT_PADRAO_MS = 30_000; // 30 segundos
@@ -174,8 +174,19 @@ export function executarProcessoSeguroAsync(executavel, argumentos = [], opcoes 
 
     const encerrarFilho = (sinal = 'SIGTERM') => {
       try {
-        if (detached && filho.pid) process.kill(-filho.pid, sinal);
-        else filho.kill(sinal);
+        if (detached && filho.pid) {
+          if (process.platform === 'win32') {
+            // No Windows, spawn com detached:true não cria um grupo de processo
+            // POSIX -- process.kill(-pid) falha silenciosamente (capturado pelo
+            // catch abaixo) e o filho nunca morre. taskkill /t derruba a árvore
+            // inteira (filho + netos) pelo PID real.
+            execFileSync('taskkill', ['/pid', String(filho.pid), '/t', '/f'], { stdio: 'ignore' });
+          } else {
+            process.kill(-filho.pid, sinal);
+          }
+        } else {
+          filho.kill(sinal);
+        }
       } catch {
         // O subprocesso já encerrou entre a verificação e o sinal.
       }

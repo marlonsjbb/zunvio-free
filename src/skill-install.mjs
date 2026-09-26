@@ -39,6 +39,6 @@ export function instalarSkill({ log = (m) => console.log(m) } = {}) {
   log(`Skill /zunvio-score instalada em ${destino}`);
   log('Abra uma nova sessão do Claude Code e digite /zunvio-score para usar.');
   log('Qualquer outro agente com acesso ao terminal usa direto, sem instalar nada:');
-  log('  npx zunvio-score analyze <pasta-do-projeto>');
+  log('  npx zunvio-score <pasta-do-projeto>');
   return 0;
 }

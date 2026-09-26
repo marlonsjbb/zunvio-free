@@ -1,32 +1,44 @@
 {
   "name": "zunvio-score",
-  "version": "0.1.8",
-  "description": "ZUNVIO Score: analisa uma versao exata de um projeto de software e responde, com prova, se da para publicar. Analise local e somente leitura.",
+  "version": "0.1.15",
+  "description": "ZUNVIO Score: responde, com prova, se uma versão exata do seu projeto está pronta para publicar. Análise local e somente leitura.",
   "type": "module",
   "bin": {
-    "zunvio": "./bin/zunvio.mjs"
+    "zunvio-score": "./bin/zunvio.mjs",
+    "zunvio": "./bin/zunvio.mjs",
+    "zunvio-upgrade": "./bin/zunvio-upgrade.mjs"
   },
   "engines": {
     "node": ">=20.10.0"
   },
-  "license": "UNLICENSED",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/marlonsjbb/zunvio-free.git"
-  },
-  "keywords": [
-    "seguranca",
-    "assurance",
-    "scan",
-    "prontidao",
-    "gitleaks"
-  ],
   "files": [
     "bin/",
     "src/",
     "rules/",
-    "skills/",
+    "integrations/skills/",
+    "examples/demo/",
     "marca/zunvio-wordmark.png",
-    "README.md"
-  ]
+    "README.md",
+    "LICENSE.md"
+  ],
+  "scripts": {
+    "test": "node --test test/**/*.test.mjs",
+    "scan": "node ./bin/zunvio.mjs",
+    "site:export": "node site/export-publication.mjs"
+  },
+  "keywords": [
+    "seguranca",
+    "prontidao",
+    "release",
+    "sast",
+    "segredos",
+    "read-only"
+  ],
+  "author": "Marlon Adriano de Sousa Silva",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "homepage": "https://zunvio.com.br/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/marlonsjbb/zunvio-free.git"
+  }
 }

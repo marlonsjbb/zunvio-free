@@ -1,13 +1,9 @@
-import { execFile, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { promisify } from 'node:util';
-import { criarIndicadorSimples } from './cli-progress.mjs';
-
-const execFileAsync = promisify(execFile);
 
 /**
  * Provisionamento do Gitleaks (o detector de segredos) com CONSENTIMENTO do
@@ -23,7 +19,7 @@ const execFileAsync = promisify(execFile);
  *    embutida NESTE código antes de qualquer extração;
  *  - qualquer falha degrada honestamente: o portão de segredos fica
  *    NÃO COMPROVADO, nunca finge sucesso;
- *  - nada é gravado fora de ~/.zunvio/bin.
+ *  - binário, cache e trabalho ficam sob ~/.zunvio, nunca no alvo analisado.
  *
  * O Semgrep entra pelo mesmo caminho (autorizado por Marlon em 2026-09-02),
  * mas por outro mecanismo: ele é uma ferramenta Python, então o
@@ -67,27 +63,48 @@ const PINS = {
  * atravessa normalmente. Sem curl, cai no fetch. A verificação de SHA-256
  * acontece DEPOIS, sobre os bytes, seja qual for o caminho.
  */
-// `indicadorVisual` liga o spinner de atividade (MASS-388, achado 1): sem ele
-// o download fica mudo por até 120s (o timeout do curl) e o terminal parece
-// travado. O curl aqui roda de forma ASSÍNCRONA (execFile, não spawnSync) de
-// propósito — spawnSync bloqueia a thread principal do Node por inteiro, o
-// que congelaria a animação do spinner (o setInterval nunca dispararia
-// durante o download).
-async function baixarBytes(url, { indicadorVisual = false } = {}) {
+function criarContextoProvisionamento(diretorioBase = join(homedir(), '.zunvio')) {
+  const raiz = resolve(diretorioBase);
+  const trabalho = join(raiz, 'work');
+  const cache = join(raiz, 'cache');
+  const cachePip = join(cache, 'pip');
+  const cachePython = join(cache, 'python');
+  for (const diretorio of [raiz, trabalho, cache, cachePip, cachePython]) {
+    mkdirSync(diretorio, { recursive: true });
+  }
+  return Object.freeze({
+    raiz,
+    cwd: trabalho,
+    env: Object.freeze({
+      ...process.env,
+      TMPDIR: trabalho,
+      TMP: trabalho,
+      TEMP: trabalho,
+      XDG_CACHE_HOME: cache,
+      PIP_CACHE_DIR: cachePip,
+      PYTHONPYCACHEPREFIX: cachePython,
+      PIP_DISABLE_PIP_VERSION_CHECK: '1',
+      PIP_NO_INPUT: '1'
+    })
+  });
+}
+
+function opcoesProcesso(contexto, extras = {}) {
+  return { cwd: contexto.cwd, env: contexto.env, shell: false, ...extras };
+}
+
+async function baixarBytes(url, contexto, executarProcesso = spawnSync) {
   const { mkdtempSync, readFileSync } = await import('node:fs');
   const dirTemp = mkdtempSync(join(tmpdir(), 'zunvio-dl-'));
   const destino = join(dirTemp, 'pacote.bin');
-  const indicador = indicadorVisual
-    ? criarIndicadorSimples('Baixando o Gitleaks...', { stream: process.stderr })
-    : null;
   try {
-    try {
-      await execFileAsync('curl', ['-fsSL', '--retry', '2', '--max-time', '120', '-o', destino, url], { timeout: 150_000 });
-      if (existsSync(destino)) {
-        return Buffer.from(readFileSync(destino));
-      }
-    } catch {
-      // curl ausente ou falhou: cai no fetch abaixo, sem interromper o download.
+    const r = executarProcesso(
+      'curl',
+      ['-fsSL', '--retry', '2', '--max-time', '120', '-o', destino, url],
+      opcoesProcesso(contexto, { timeout: 150_000 })
+    );
+    if (r.status === 0 && existsSync(destino)) {
+      return Buffer.from(readFileSync(destino));
     }
     const resposta = await fetch(url, { redirect: 'follow' });
     if (!resposta.ok) {
@@ -95,13 +112,12 @@ async function baixarBytes(url, { indicadorVisual = false } = {}) {
     }
     return Buffer.from(await resposta.arrayBuffer());
   } finally {
-    indicador?.finalizar();
     rmSync(dirTemp, { recursive: true, force: true });
   }
 }
 
-function jaNoPath() {
-  const r = spawnSync('gitleaks', ['version'], { timeout: 10_000, shell: false });
+function jaNoPath(executarProcesso, contexto) {
+  const r = executarProcesso('gitleaks', ['version'], opcoesProcesso(contexto, { timeout: 10_000 }));
   return r.status === 0;
 }
 
@@ -134,16 +150,20 @@ async function pedirConsentimento(pin, dirCache, log) {
   }
 }
 
-function extrair(plataforma, arquivoBaixado, dirDestino) {
+function extrair(plataforma, arquivoBaixado, dirDestino, contexto, executarProcesso) {
   if (plataforma.startsWith('win32')) {
-    const r = spawnSync(
+    const r = executarProcesso(
       'powershell',
       ['-NoProfile', '-Command', `Expand-Archive -LiteralPath "${arquivoBaixado}" -DestinationPath "${dirDestino}" -Force`],
-      { timeout: 60_000 }
+      opcoesProcesso(contexto, { timeout: 60_000 })
     );
     return r.status === 0;
   }
-  const r = spawnSync('tar', ['-xzf', arquivoBaixado, '-C', dirDestino], { timeout: 60_000 });
+  const r = executarProcesso(
+    'tar',
+    ['-xzf', arquivoBaixado, '-C', dirDestino],
+    opcoesProcesso(contexto, { timeout: 60_000 })
+  );
   return r.status === 0;
 }
 
@@ -152,9 +172,15 @@ function extrair(plataforma, arquivoBaixado, dirDestino) {
  * (~/.zunvio/bin) → download oficial com consentimento e hash conferido.
  * Nunca lança: devolve a origem usada, ou null (e o chamador segue degradado).
  */
-export async function garantirGitleaks({ log = (m) => console.error(m), indicadorVisual = false } = {}) {
+export async function garantirGitleaks({
+  log = (m) => console.error(m),
+  diretorioBase,
+  executarProcesso = spawnSync,
+  baixar = baixarBytes
+} = {}) {
   try {
-    if (jaNoPath()) {
+    const contexto = criarContextoProvisionamento(diretorioBase);
+    if (jaNoPath(executarProcesso, contexto)) {
       return { disponivel: true, origem: 'PATH' };
     }
 
@@ -162,10 +188,10 @@ export async function garantirGitleaks({ log = (m) => console.error(m), indicado
     const pin = PINS[plataforma];
     if (!pin) {
       log(`[zunvio] Gitleaks ausente e sem provisionamento automático para ${plataforma}; o portão de segredos ficará NÃO COMPROVADO.`);
-      return { disponivel: false, origem: null };
+      return { disponivel: false, origem: null, motivo: 'INDISPONIVEL' };
     }
 
-    const dirCache = join(homedir(), '.zunvio', 'bin');
+    const dirCache = join(contexto.raiz, 'bin');
     const caminhoBinario = join(dirCache, pin.binario);
     const marcador = join(dirCache, `.gitleaks-${VERSAO_GITLEAKS}.ok`);
 
@@ -174,14 +200,19 @@ export async function garantirGitleaks({ log = (m) => console.error(m), indicado
       return { disponivel: true, origem: 'CACHE' };
     }
 
+    const terminalInterativo = Boolean(process.stdin.isTTY && process.stdout.isTTY);
     const consentiu = await pedirConsentimento(pin, dirCache, log);
     if (!consentiu) {
-      return { disponivel: false, origem: null };
+      return {
+        disponivel: false,
+        origem: null,
+        motivo: terminalInterativo ? 'RECUSADO_PELO_USUARIO' : 'INDISPONIVEL'
+      };
     }
 
     const url = `https://github.com/gitleaks/gitleaks/releases/download/v${VERSAO_GITLEAKS}/${pin.arquivo}`;
     log(`[zunvio] Baixando ${pin.arquivo} do release oficial...`);
-    const bytes = await baixarBytes(url, { indicadorVisual });
+    const bytes = await baixar(url, contexto, executarProcesso);
     const hash = createHash('sha256').update(bytes).digest('hex');
     if (hash !== pin.sha256) {
       // Integridade acima de conveniência: hash divergente nunca é extraído.
@@ -191,7 +222,7 @@ export async function garantirGitleaks({ log = (m) => console.error(m), indicado
     mkdirSync(dirCache, { recursive: true });
     const arquivoTemp = join(tmpdir(), `zunvio-${pin.arquivo}`);
     writeFileSync(arquivoTemp, bytes);
-    const okExtracao = extrair(plataforma, arquivoTemp, dirCache);
+    const okExtracao = extrair(plataforma, arquivoTemp, dirCache, contexto, executarProcesso);
     rmSync(arquivoTemp, { force: true });
     if (!okExtracao || !existsSync(caminhoBinario)) {
       throw new Error('falha ao extrair o pacote do Gitleaks');
@@ -202,7 +233,11 @@ export async function garantirGitleaks({ log = (m) => console.error(m), indicado
     writeFileSync(marcador, `sha256(${pin.arquivo})=${pin.sha256}\n`);
 
     process.env.PATH = `${dirCache}${delimiter}${process.env.PATH ?? ''}`;
-    const confirma = spawnSync(caminhoBinario, ['version'], { timeout: 10_000 });
+    const confirma = executarProcesso(
+      caminhoBinario,
+      ['version'],
+      opcoesProcesso(contexto, { timeout: 10_000 })
+    );
     if (confirma.status !== 0) {
       throw new Error('binário baixado não executou');
     }
@@ -210,12 +245,12 @@ export async function garantirGitleaks({ log = (m) => console.error(m), indicado
     return { disponivel: true, origem: 'BAIXADO' };
   } catch (err) {
     log(`[zunvio] Não foi possível obter o Gitleaks automaticamente (${err.message}); o portão de segredos ficará NÃO COMPROVADO.`);
-    return { disponivel: false, origem: null };
+    return { disponivel: false, origem: null, motivo: 'FALHA_DE_PROVISIONAMENTO' };
   }
 }
 
-function jaNoPathSemgrep() {
-  const r = spawnSync('semgrep', ['--version'], { timeout: 15_000, shell: false });
+function jaNoPathSemgrep(executarProcesso, contexto) {
+  const r = executarProcesso('semgrep', ['--version'], opcoesProcesso(contexto, { timeout: 15_000 }));
   return r.status === 0;
 }
 
@@ -224,14 +259,14 @@ function jaNoPathSemgrep() {
  * responde a `python` sem ser um Python de verdade, por isso a decisão é
  * pela SAÍDA (`Python 3.x.y`), nunca só pelo código de retorno.
  */
-function acharPython() {
+function acharPython(executarProcesso, contexto) {
   const candidatos = [
     ['python', ['--version']],
     ['python3', ['--version']],
     ['py', ['-3', '--version']]
   ];
   for (const [cmd, args] of candidatos) {
-    const r = spawnSync(cmd, args, { timeout: 15_000, shell: false });
+    const r = executarProcesso(cmd, args, opcoesProcesso(contexto, { timeout: 15_000 }));
     const saida = `${r.stdout ?? ''}${r.stderr ?? ''}`;
     const m = /Python (3)\.(\d+)\./.exec(saida);
     if (r.status === 0 && m && Number(m[2]) >= 10) {
@@ -272,13 +307,18 @@ async function pedirConsentimentoSemgrep(dirVenv, log) {
  * (~/.zunvio/semgrep-venv) → instalação via pip com consentimento e versão
  * fixada. Nunca lança: devolve a origem usada, ou null (chamador degrada).
  */
-export async function garantirSemgrep({ log = (m) => console.error(m), indicadorVisual = false } = {}) {
+export async function garantirSemgrep({
+  log = (m) => console.error(m),
+  diretorioBase,
+  executarProcesso = spawnSync
+} = {}) {
   try {
-    if (jaNoPathSemgrep()) {
+    const contexto = criarContextoProvisionamento(diretorioBase);
+    if (jaNoPathSemgrep(executarProcesso, contexto)) {
       return { disponivel: true, origem: 'PATH' };
     }
 
-    const dirVenv = join(homedir(), '.zunvio', 'semgrep-venv');
+    const dirVenv = join(contexto.raiz, 'semgrep-venv');
     const dirBin = join(dirVenv, process.platform === 'win32' ? 'Scripts' : 'bin');
     const binarioSemgrep = join(dirBin, process.platform === 'win32' ? 'semgrep.exe' : 'semgrep');
     const marcador = join(dirVenv, `.semgrep-${VERSAO_SEMGREP}.ok`);
@@ -288,16 +328,21 @@ export async function garantirSemgrep({ log = (m) => console.error(m), indicador
       return { disponivel: true, origem: 'CACHE' };
     }
 
-    const python = acharPython();
+    const python = acharPython(executarProcesso, contexto);
     if (!python) {
       log('[zunvio] Semgrep ausente e nenhum Python 3.10+ encontrado para instalá-lo; o portão de segurança estática ficará NÃO COMPROVADO.');
       log('[zunvio] Instale o Python (python.org) ou o próprio Semgrep e repita a análise.');
-      return { disponivel: false, origem: null };
+      return { disponivel: false, origem: null, motivo: 'INDISPONIVEL' };
     }
 
+    const terminalInterativo = Boolean(process.stdin.isTTY && process.stdout.isTTY);
     const consentiu = await pedirConsentimentoSemgrep(dirVenv, log);
     if (!consentiu) {
-      return { disponivel: false, origem: null };
+      return {
+        disponivel: false,
+        origem: null,
+        motivo: terminalInterativo ? 'RECUSADO_PELO_USUARIO' : 'INDISPONIVEL'
+      };
     }
 
     // Venv incompleto de uma tentativa anterior é descartado, nunca reaproveitado.
@@ -306,37 +351,30 @@ export async function garantirSemgrep({ log = (m) => console.error(m), indicador
     }
 
     log(`[zunvio] Criando ambiente isolado e instalando o Semgrep ${VERSAO_SEMGREP} (pode levar alguns minutos)...`);
-    const venv = spawnSync(python.cmd, [...python.argsBase, '-m', 'venv', dirVenv], { timeout: 120_000 });
+    const venv = executarProcesso(
+      python.cmd,
+      [...python.argsBase, '-m', 'venv', dirVenv],
+      opcoesProcesso(contexto, { timeout: 120_000 })
+    );
     if (venv.status !== 0) {
       throw new Error('falha ao criar o ambiente Python isolado');
     }
     const pythonVenv = join(dirBin, process.platform === 'win32' ? 'python.exe' : 'python');
-    // pip roda de forma ASSÍNCRONA (execFile, não spawnSync) de propósito: essa
-    // instalação é a etapa mais demorada do bootstrap inteiro (timeout de 10
-    // minutos) e spawnSync bloqueia a thread principal do Node por completo —
-    // o spinner de atividade abaixo (MASS-388, achado 1) nunca animaria (o
-    // setInterval que o move não dispara com a thread principal bloqueada).
-    const indicadorPip = indicadorVisual
-      ? criarIndicadorSimples('Instalando o Semgrep...', { stream: process.stderr })
-      : null;
-    try {
-      await execFileAsync(
-        pythonVenv,
-        ['-m', 'pip', 'install', '--quiet', `semgrep==${VERSAO_SEMGREP}`],
-        {
-          timeout: 600_000,
-          maxBuffer: 10 * 1024 * 1024,
-          env: { ...process.env, PIP_DISABLE_PIP_VERSION_CHECK: '1' }
-        }
-      );
-    } catch (err) {
-      throw new Error(`pip não conseguiu instalar o Semgrep (${String(err?.stderr ?? err?.message ?? '').trim().slice(0, 200)})`);
-    } finally {
-      indicadorPip?.finalizar();
+    const instala = executarProcesso(
+      pythonVenv,
+      ['-m', 'pip', 'install', '--quiet', `semgrep==${VERSAO_SEMGREP}`],
+      opcoesProcesso(contexto, { timeout: 600_000 })
+    );
+    if (instala.status !== 0) {
+      throw new Error(`pip não conseguiu instalar o Semgrep (${String(instala.stderr ?? '').trim().slice(0, 200)})`);
     }
 
     process.env.PATH = `${dirBin}${delimiter}${process.env.PATH ?? ''}`;
-    const confirma = spawnSync(binarioSemgrep, ['--version'], { timeout: 30_000 });
+    const confirma = executarProcesso(
+      binarioSemgrep,
+      ['--version'],
+      opcoesProcesso(contexto, { timeout: 30_000 })
+    );
     if (confirma.status !== 0) {
       throw new Error('Semgrep instalado não executou');
     }
@@ -345,6 +383,6 @@ export async function garantirSemgrep({ log = (m) => console.error(m), indicador
     return { disponivel: true, origem: 'INSTALADO' };
   } catch (err) {
     log(`[zunvio] Não foi possível obter o Semgrep automaticamente (${err.message}); o portão de segurança estática ficará NÃO COMPROVADO.`);
-    return { disponivel: false, origem: null };
+    return { disponivel: false, origem: null, motivo: 'FALHA_DE_PROVISIONAMENTO' };
   }
 }

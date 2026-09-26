@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://zunvio.com/schemas/zunvio-contract-v1.json",
+  "$id": "https://zunvio.com.br/schemas/zunvio-contract-v1.json",
   "title": "ZUNVIO Publication Contract v1",
   "description": "Contrato formal das 12 dimensões de contexto necessárias à avaliação de prontidão para publicação.",
   "type": "object",

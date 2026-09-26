@@ -136,6 +136,11 @@ export function criarAmbienteTemporarioSemgrep() {
       SEMGREP_LOG_FILE: join(raiz, 'semgrep.log'),
       SEMGREP_SETTINGS_FILE: join(raiz, 'settings.yml'),
       SEMGREP_VERSION_CACHE_PATH: join(raiz, 'version-cache'),
+      // O10 (Bancada Pública v1): no Windows o Python do Semgrep lê o YAML das regras na codificação do sistema
+      // (cp1252) e devolve as mensagens com UTF-8 decodificado duas vezes ("concatenaÃ§Ã£o"). O modo UTF-8 do
+      // Python força leitura/escrita em UTF-8 em qualquer plataforma (reproduzido e corrigido em 25/09/2026).
+      PYTHONUTF8: '1',
+      PYTHONIOENCODING: 'utf-8',
       ...(bundleCa ? { SSL_CERT_FILE: bundleCa } : {})
     }
   };

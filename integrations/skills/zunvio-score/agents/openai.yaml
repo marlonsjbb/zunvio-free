@@ -1,0 +1,4 @@
+interface:
+  display_name: "ZUNVIO Score"
+  short_description: "Analisa prontidão e segurança do workspace"
+  default_prompt: "Use $zunvio-score para analisar o workspace atual em modo somente leitura."

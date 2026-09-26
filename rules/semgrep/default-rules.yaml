@@ -3,9 +3,36 @@ rules:
     languages:
       - javascript
       - typescript
-    message: "Uso de eval() detectado. Execução dinâmica de código pode permitir injeção de comandos."
+    message: "Uso de eval() detectado (inclui mathjs.eval/evaluate). Execução dinâmica de código pode permitir injeção de comandos."
     severity: ERROR
-    pattern: eval(...)
+    pattern-either:
+      - pattern: eval(...)
+      # PL-05: avaliador de expressões do mathjs, só com o receptor ligado ao pacote (um `.eval` genérico teria
+      # precisão inaceitável).
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $M = require('mathjs');
+                  ...
+              - pattern-inside: |
+                  import $M from 'mathjs';
+                  ...
+              - pattern-inside: |
+                  import * as $M from 'mathjs';
+                  ...
+          - pattern-either:
+              - pattern: $M.eval(...)
+              - pattern: $M.evaluate(...)
+      # PL-05 (R2): import nomeado/desestruturado de evaluate do mathjs (eval nomeado já casa em eval(...)).
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  const { evaluate } = require('mathjs');
+                  ...
+              - pattern-inside: |
+                  import { evaluate } from 'mathjs';
+                  ...
+          - pattern: evaluate(...)
     metadata:
       category: security
       cwe: "CWE-95: Improper Neutralization of Directives in Dynamically Evaluated Code"
@@ -14,12 +41,16 @@ rules:
     languages:
       - javascript
       - typescript
-    message: "Uso de child_process.exec com concatenação direta de comando detectado."
+    message: "Uso de child_process.exec/execSync (comando executado por shell) detectado."
     severity: ERROR
     patterns:
       - pattern-either:
           - pattern: child_process.exec($CMD, ...)
           - pattern: exec($CMD, ...)
+          # PL-05: execSync usa o mesmo shell de exec; a identidade de símbolo (PL-03) vale para os dois nomes.
+          - pattern: child_process.execSync($CMD, ...)
+          - pattern: execSync($CMD, ...)
+          - pattern: $CP.execSync($CMD, ...)
     metadata:
       category: security
       cwe: "CWE-78: Improper Neutralization of Special Elements used in an OS Command"
@@ -48,3 +79,507 @@ rules:
     metadata:
       category: security
       cwe: "CWE-798: Use of Hard-coded Credentials"
+
+  # MASS-324: ampliação curada de categorias (ver rules/README.md), sem modo taint.
+  # PL-05: as regras de valor montado (SQL, path, SSRF) aceitam o valor montado por concatenação (`+`), por
+  # template literal com `${...}` ou numa variável atribuída a uma dessas formas no mesmo escopo, antes da chamada.
+  # O significado (models/finding-meaning.mjs) decide: constante ⇒ INFORMATIVO; entrada externa demonstrada pelo
+  # fluxo local ⇒ RISCO_DEMONSTRADO; senão REVISAO_NECESSARIA.
+
+  - id: zunvio.sql-injection-concat
+    languages:
+      - javascript
+      - typescript
+    message: "Consulta SQL montada dinamicamente (concatenação com '+', template literal com ${...} ou variável montada assim no mesmo escopo) passada a query/execute."
+    severity: ERROR
+    pattern-either:
+      - pattern: $DB.query($A + $B, ...)
+      - pattern: $DB.execute($A + $B, ...)
+      - patterns:
+          - pattern-either:
+              - pattern: $DB.query(`...${$X}...`, ...)
+              - pattern: $DB.execute(`...${$X}...`, ...)
+          - pattern-either:
+              - pattern: $DB.query($T, ...)
+              - pattern: $DB.execute($T, ...)
+          - metavariable-pattern:
+              metavariable: $T
+              patterns:
+                - pattern-regex: "(?is)\\b(select|insert|update|delete|merge|replace|upsert|with|create|drop|alter|truncate)\\b"
+      - patterns:
+          - pattern-inside: |
+              $ARG = $T;
+              ...
+          - pattern-either:
+              - pattern-inside: |
+                  $ARG = $A + $B;
+                  ...
+              - pattern-inside: |
+                  $ARG = `...${$X}...`;
+                  ...
+          - pattern-either:
+              - pattern: $DB.query($ARG, ...)
+              - pattern: $DB.execute($ARG, ...)
+          - metavariable-pattern:
+              metavariable: $T
+              patterns:
+                - pattern-regex: "(?is)\\b(select|insert|update|delete|merge|replace|upsert|with|create|drop|alter|truncate)\\b"
+    metadata:
+      category: security
+      cwe: "CWE-89: Improper Neutralization of Special Elements used in an SQL Command"
+
+  - id: zunvio.path-traversal-fs-concat
+    languages:
+      - javascript
+      - typescript
+    message: "Caminho de arquivo montado dinamicamente (concatenação, template literal com ${...} ou variável montada assim no mesmo escopo) usado em operação de sistema de arquivos ou envio de arquivo. Se o trecho montado vier de entrada externa, permite acessar caminhos fora do diretório esperado."
+    severity: WARNING
+    pattern-either:
+      - pattern: fs.readFile($A + $B, ...)
+      - pattern: fs.promises.readFile($A + $B, ...)
+      - pattern: fs.readFileSync($A + $B, ...)
+      - pattern: fs.promises.readFileSync($A + $B, ...)
+      - pattern: fs.writeFile($A + $B, ...)
+      - pattern: fs.promises.writeFile($A + $B, ...)
+      - pattern: fs.writeFileSync($A + $B, ...)
+      - pattern: fs.promises.writeFileSync($A + $B, ...)
+      - pattern: fs.appendFile($A + $B, ...)
+      - pattern: fs.promises.appendFile($A + $B, ...)
+      - pattern: fs.appendFileSync($A + $B, ...)
+      - pattern: fs.promises.appendFileSync($A + $B, ...)
+      - pattern: fs.unlink($A + $B, ...)
+      - pattern: fs.promises.unlink($A + $B, ...)
+      - pattern: fs.unlinkSync($A + $B, ...)
+      - pattern: fs.promises.unlinkSync($A + $B, ...)
+      - pattern: fs.createReadStream($A + $B, ...)
+      - pattern: fs.promises.createReadStream($A + $B, ...)
+      - pattern: fs.createWriteStream($A + $B, ...)
+      - pattern: fs.promises.createWriteStream($A + $B, ...)
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $FS = require('fs');
+                  ...
+              - pattern-inside: |
+                  $FS = require('node:fs');
+                  ...
+              - pattern-inside: |
+                  $FS = require('fs/promises');
+                  ...
+              - pattern-inside: |
+                  $FS = require('node:fs/promises');
+                  ...
+              - pattern-inside: |
+                  $FS = require('fs').promises;
+                  ...
+              - pattern-inside: |
+                  import $FS from 'fs';
+                  ...
+              - pattern-inside: |
+                  import * as $FS from 'fs';
+                  ...
+              - pattern-inside: |
+                  import $FS from 'fs/promises';
+                  ...
+              - pattern-inside: |
+                  import * as $FS from 'fs/promises';
+                  ...
+          - pattern-either:
+              - pattern: $FS.readFile($A + $B, ...)
+              - pattern: $FS.readFileSync($A + $B, ...)
+              - pattern: $FS.writeFile($A + $B, ...)
+              - pattern: $FS.writeFileSync($A + $B, ...)
+              - pattern: $FS.appendFile($A + $B, ...)
+              - pattern: $FS.appendFileSync($A + $B, ...)
+              - pattern: $FS.unlink($A + $B, ...)
+              - pattern: $FS.unlinkSync($A + $B, ...)
+              - pattern: $FS.createReadStream($A + $B, ...)
+              - pattern: $FS.createWriteStream($A + $B, ...)
+      - pattern: $RES.sendFile($A + $B, ...)
+      - pattern: $RES.download($A + $B, ...)
+      - pattern: fs.readFile(`...${$X}...`, ...)
+      - pattern: fs.promises.readFile(`...${$X}...`, ...)
+      - pattern: fs.readFileSync(`...${$X}...`, ...)
+      - pattern: fs.promises.readFileSync(`...${$X}...`, ...)
+      - pattern: fs.writeFile(`...${$X}...`, ...)
+      - pattern: fs.promises.writeFile(`...${$X}...`, ...)
+      - pattern: fs.writeFileSync(`...${$X}...`, ...)
+      - pattern: fs.promises.writeFileSync(`...${$X}...`, ...)
+      - pattern: fs.appendFile(`...${$X}...`, ...)
+      - pattern: fs.promises.appendFile(`...${$X}...`, ...)
+      - pattern: fs.appendFileSync(`...${$X}...`, ...)
+      - pattern: fs.promises.appendFileSync(`...${$X}...`, ...)
+      - pattern: fs.unlink(`...${$X}...`, ...)
+      - pattern: fs.promises.unlink(`...${$X}...`, ...)
+      - pattern: fs.unlinkSync(`...${$X}...`, ...)
+      - pattern: fs.promises.unlinkSync(`...${$X}...`, ...)
+      - pattern: fs.createReadStream(`...${$X}...`, ...)
+      - pattern: fs.promises.createReadStream(`...${$X}...`, ...)
+      - pattern: fs.createWriteStream(`...${$X}...`, ...)
+      - pattern: fs.promises.createWriteStream(`...${$X}...`, ...)
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $FS = require('fs');
+                  ...
+              - pattern-inside: |
+                  $FS = require('node:fs');
+                  ...
+              - pattern-inside: |
+                  $FS = require('fs/promises');
+                  ...
+              - pattern-inside: |
+                  $FS = require('node:fs/promises');
+                  ...
+              - pattern-inside: |
+                  $FS = require('fs').promises;
+                  ...
+              - pattern-inside: |
+                  import $FS from 'fs';
+                  ...
+              - pattern-inside: |
+                  import * as $FS from 'fs';
+                  ...
+              - pattern-inside: |
+                  import $FS from 'fs/promises';
+                  ...
+              - pattern-inside: |
+                  import * as $FS from 'fs/promises';
+                  ...
+          - pattern-either:
+              - pattern: $FS.readFile(`...${$X}...`, ...)
+              - pattern: $FS.readFileSync(`...${$X}...`, ...)
+              - pattern: $FS.writeFile(`...${$X}...`, ...)
+              - pattern: $FS.writeFileSync(`...${$X}...`, ...)
+              - pattern: $FS.appendFile(`...${$X}...`, ...)
+              - pattern: $FS.appendFileSync(`...${$X}...`, ...)
+              - pattern: $FS.unlink(`...${$X}...`, ...)
+              - pattern: $FS.unlinkSync(`...${$X}...`, ...)
+              - pattern: $FS.createReadStream(`...${$X}...`, ...)
+              - pattern: $FS.createWriteStream(`...${$X}...`, ...)
+      - pattern: $RES.sendFile(`...${$X}...`, ...)
+      - pattern: $RES.download(`...${$X}...`, ...)
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $ARG = $A + $B;
+                  ...
+              - pattern-inside: |
+                  $ARG = `...${$X}...`;
+                  ...
+          - pattern-either:
+              - pattern: fs.readFile($ARG, ...)
+              - pattern: fs.promises.readFile($ARG, ...)
+              - pattern: fs.readFileSync($ARG, ...)
+              - pattern: fs.promises.readFileSync($ARG, ...)
+              - pattern: fs.writeFile($ARG, ...)
+              - pattern: fs.promises.writeFile($ARG, ...)
+              - pattern: fs.writeFileSync($ARG, ...)
+              - pattern: fs.promises.writeFileSync($ARG, ...)
+              - pattern: fs.appendFile($ARG, ...)
+              - pattern: fs.promises.appendFile($ARG, ...)
+              - pattern: fs.appendFileSync($ARG, ...)
+              - pattern: fs.promises.appendFileSync($ARG, ...)
+              - pattern: fs.unlink($ARG, ...)
+              - pattern: fs.promises.unlink($ARG, ...)
+              - pattern: fs.unlinkSync($ARG, ...)
+              - pattern: fs.promises.unlinkSync($ARG, ...)
+              - pattern: fs.createReadStream($ARG, ...)
+              - pattern: fs.promises.createReadStream($ARG, ...)
+              - pattern: fs.createWriteStream($ARG, ...)
+              - pattern: fs.promises.createWriteStream($ARG, ...)
+              - patterns:
+                  - pattern-either:
+                      - pattern-inside: |
+                          $FS = require('fs');
+                          ...
+                      - pattern-inside: |
+                          $FS = require('node:fs');
+                          ...
+                      - pattern-inside: |
+                          $FS = require('fs/promises');
+                          ...
+                      - pattern-inside: |
+                          $FS = require('node:fs/promises');
+                          ...
+                      - pattern-inside: |
+                          $FS = require('fs').promises;
+                          ...
+                      - pattern-inside: |
+                          import $FS from 'fs';
+                          ...
+                      - pattern-inside: |
+                          import * as $FS from 'fs';
+                          ...
+                      - pattern-inside: |
+                          import $FS from 'fs/promises';
+                          ...
+                      - pattern-inside: |
+                          import * as $FS from 'fs/promises';
+                          ...
+                  - pattern-either:
+                      - pattern: $FS.readFile($ARG, ...)
+                      - pattern: $FS.readFileSync($ARG, ...)
+                      - pattern: $FS.writeFile($ARG, ...)
+                      - pattern: $FS.writeFileSync($ARG, ...)
+                      - pattern: $FS.appendFile($ARG, ...)
+                      - pattern: $FS.appendFileSync($ARG, ...)
+                      - pattern: $FS.unlink($ARG, ...)
+                      - pattern: $FS.unlinkSync($ARG, ...)
+                      - pattern: $FS.createReadStream($ARG, ...)
+                      - pattern: $FS.createWriteStream($ARG, ...)
+              - pattern: $RES.sendFile($ARG, ...)
+              - pattern: $RES.download($ARG, ...)
+    metadata:
+      category: security
+      cwe: "CWE-22: Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')"
+
+  - id: zunvio.ssrf-dynamic-url
+    languages:
+      - javascript
+      - typescript
+    message: "URL de requisição de rede montada dinamicamente (concatenação, template literal com ${...} ou variável montada assim no mesmo escopo). Se o trecho montado vier de entrada externa, o servidor pode ser induzido a requisitar um destino arbitrário (SSRF)."
+    severity: WARNING
+    pattern-either:
+      - pattern: fetch($A + $B, ...)
+      - pattern: axios($A + $B, ...)
+      - pattern: got($A + $B, ...)
+      - pattern: axios.get($A + $B, ...)
+      - pattern: axios.post($A + $B, ...)
+      - pattern: axios.put($A + $B, ...)
+      - pattern: axios.patch($A + $B, ...)
+      - pattern: axios.delete($A + $B, ...)
+      - pattern: axios.head($A + $B, ...)
+      - pattern: axios.request($A + $B, ...)
+      - pattern: needle.get($A + $B, ...)
+      - pattern: needle.post($A + $B, ...)
+      - pattern: needle.head($A + $B, ...)
+      - pattern: needle.request($A + $B, ...)
+      - pattern: got.get($A + $B, ...)
+      - pattern: got.post($A + $B, ...)
+      - pattern: superagent.get($A + $B, ...)
+      - pattern: superagent.post($A + $B, ...)
+      - pattern: http.request($A + $B, ...)
+      - pattern: https.request($A + $B, ...)
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RQ = require('request');
+                  ...
+              - pattern-inside: |
+                  import $RQ from 'request';
+                  ...
+              - pattern-inside: |
+                  import * as $RQ from 'request';
+                  ...
+          - pattern-either:
+              - pattern: $RQ($A + $B, ...)
+              - pattern: $RQ.get($A + $B, ...)
+              - pattern: $RQ.post($A + $B, ...)
+      - pattern: fetch(`...${$X}...`, ...)
+      - pattern: axios(`...${$X}...`, ...)
+      - pattern: got(`...${$X}...`, ...)
+      - pattern: axios.get(`...${$X}...`, ...)
+      - pattern: axios.post(`...${$X}...`, ...)
+      - pattern: axios.put(`...${$X}...`, ...)
+      - pattern: axios.patch(`...${$X}...`, ...)
+      - pattern: axios.delete(`...${$X}...`, ...)
+      - pattern: axios.head(`...${$X}...`, ...)
+      - pattern: axios.request(`...${$X}...`, ...)
+      - pattern: needle.get(`...${$X}...`, ...)
+      - pattern: needle.post(`...${$X}...`, ...)
+      - pattern: needle.head(`...${$X}...`, ...)
+      - pattern: needle.request(`...${$X}...`, ...)
+      - pattern: got.get(`...${$X}...`, ...)
+      - pattern: got.post(`...${$X}...`, ...)
+      - pattern: superagent.get(`...${$X}...`, ...)
+      - pattern: superagent.post(`...${$X}...`, ...)
+      - pattern: http.request(`...${$X}...`, ...)
+      - pattern: https.request(`...${$X}...`, ...)
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RQ = require('request');
+                  ...
+              - pattern-inside: |
+                  import $RQ from 'request';
+                  ...
+              - pattern-inside: |
+                  import * as $RQ from 'request';
+                  ...
+          - pattern-either:
+              - pattern: $RQ(`...${$X}...`, ...)
+              - pattern: $RQ.get(`...${$X}...`, ...)
+              - pattern: $RQ.post(`...${$X}...`, ...)
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $ARG = $A + $B;
+                  ...
+              - pattern-inside: |
+                  $ARG = `...${$X}...`;
+                  ...
+          - pattern-either:
+              - pattern: fetch($ARG, ...)
+              - pattern: axios($ARG, ...)
+              - pattern: got($ARG, ...)
+              - pattern: axios.get($ARG, ...)
+              - pattern: axios.post($ARG, ...)
+              - pattern: axios.put($ARG, ...)
+              - pattern: axios.patch($ARG, ...)
+              - pattern: axios.delete($ARG, ...)
+              - pattern: axios.head($ARG, ...)
+              - pattern: axios.request($ARG, ...)
+              - pattern: needle.get($ARG, ...)
+              - pattern: needle.post($ARG, ...)
+              - pattern: needle.head($ARG, ...)
+              - pattern: needle.request($ARG, ...)
+              - pattern: got.get($ARG, ...)
+              - pattern: got.post($ARG, ...)
+              - pattern: superagent.get($ARG, ...)
+              - pattern: superagent.post($ARG, ...)
+              - pattern: http.request($ARG, ...)
+              - pattern: https.request($ARG, ...)
+              - patterns:
+                  - pattern-either:
+                      - pattern-inside: |
+                          $RQ = require('request');
+                          ...
+                      - pattern-inside: |
+                          import $RQ from 'request';
+                          ...
+                      - pattern-inside: |
+                          import * as $RQ from 'request';
+                          ...
+                  - pattern-either:
+                      - pattern: $RQ($ARG, ...)
+                      - pattern: $RQ.get($ARG, ...)
+                      - pattern: $RQ.post($ARG, ...)
+    metadata:
+      category: security
+      cwe: "CWE-918: Server-Side Request Forgery (SSRF)"
+
+  - id: zunvio.insecure-dynamic-code
+    languages:
+      - javascript
+      - typescript
+    message: "Construção dinâmica de código (Function()/vm) a partir de dado potencialmente externo. JavaScript não tem uma função nativa de 'unserialize' insegura como outras linguagens; Function()/vm com entrada não confiável tem o mesmo efeito prático de execução arbitrária."
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: new Function($A, ...)
+          # PL-05: Function(...) sem `new` tem a mesma semântica.
+          - patterns:
+              - pattern: Function($A, ...)
+              - pattern-not: new Function(...)
+          - pattern: vm.runInNewContext($A, ...)
+          - pattern: vm.runInThisContext($A, ...)
+    metadata:
+      category: security
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+
+  - id: zunvio.weak-crypto-algorithm
+    languages:
+      - javascript
+      - typescript
+    message: "Algoritmo de hash criptograficamente quebrado (MD5/SHA1, pelo crypto nativo ou pelos pacotes npm md5/sha1) ou API de cifra depreciada e insegura (crypto.createCipher, derivação de IV implícita) para uso sensível a segurança."
+    severity: WARNING
+    pattern-either:
+      - pattern: crypto.createHash("md5")
+      - pattern: crypto.createHash('md5')
+      - pattern: crypto.createHash("sha1")
+      - pattern: crypto.createHash('sha1')
+      - pattern: crypto.createCipher(...)
+      # PL-05: pacotes npm `md5` e `sha1`, só com a chamada ligada ao require/import do pacote.
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $H = require('md5');
+                  ...
+              - pattern-inside: |
+                  $H = require('sha1');
+                  ...
+              - pattern-inside: |
+                  import $H from 'md5';
+                  ...
+              - pattern-inside: |
+                  import * as $H from 'md5';
+                  ...
+              - pattern-inside: |
+                  import * as $H from 'sha1';
+                  ...
+              - pattern-inside: |
+                  import $H from 'sha1';
+                  ...
+          - pattern: $H(...)
+    metadata:
+      category: security
+      cwe: "CWE-327: Use of a Broken or Risky Cryptographic Algorithm"
+
+  # PL-05: segredo de sessão/cookie escrito no código (o Gitleaks genérico não casa valores de baixa entropia).
+  - id: zunvio.hardcoded-session-secret
+    languages:
+      - javascript
+      - typescript
+    message: "Segredo de assinatura de sessão/cookie escrito diretamente no código."
+    severity: ERROR
+    pattern-either:
+      - pattern: 'session({..., secret: "...", ...})'
+      - pattern: 'cookieSession({..., secret: "...", ...})'
+      - pattern: cookieParser("...", ...)
+    metadata:
+      category: security
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+
+  # PL-05: o objeto INTEIRO da requisição usado como locals do template — o cliente controla opções do motor de
+  # template (ex.: `layout` no hbs ⇒ leitura de arquivo arbitrário). Propriedade isolada (req.body.nome) não casa.
+  - id: zunvio.template-locals-from-request
+    languages:
+      - javascript
+      - typescript
+    message: "Objeto inteiro da requisição (req.body/req.query/req.params) passado como variáveis do template em res.render: o cliente passa a controlar opções do motor de template (ex.: layout ⇒ leitura de arquivo arbitrário)."
+    severity: WARNING
+    pattern-either:
+      - patterns:
+          - pattern: $RES.render($VIEW, $REQ.$SRC, ...)
+          - metavariable-regex:
+              metavariable: $SRC
+              regex: ^(body|query|params)$
+          # PL-05 (D4): receptor com a convenção de requisição (document.body do React não é requisição).
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request)$
+      - patterns:
+          - pattern-inside: |
+              $P = $REQ.$SRC;
+              ...
+          - pattern: $RES.render($VIEW, $P, ...)
+          - metavariable-regex:
+              metavariable: $SRC
+              regex: ^(body|query|params)$
+          # PL-05 (D4): receptor com a convenção de requisição (document.body do React não é requisição).
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request)$
+      # PL-05 (R2): desestruturação `const { body } = req` é a mesma atribuição local.
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  const { $SRC } = $REQ;
+                  ...
+              - pattern-inside: |
+                  let { $SRC } = $REQ;
+                  ...
+              - pattern-inside: |
+                  var { $SRC } = $REQ;
+                  ...
+          - pattern: $RES.render($VIEW, $SRC, ...)
+          - metavariable-regex:
+              metavariable: $SRC
+              regex: ^(body|query|params)$
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request)$
+    metadata:
+      category: security
+      cwe: "CWE-22: Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')"

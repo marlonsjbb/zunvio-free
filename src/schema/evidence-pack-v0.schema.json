@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://zunvio.com/schemas/evidence-pack-v0.json",
+  "$id": "https://zunvio.com.br/schemas/evidence-pack-v0.json",
   "title": "EvidencePackV0",
   "description": "Schema formal do Evidence Pack v0 do ZUNVIO Software Assurance",
   "type": "object",
@@ -44,7 +44,7 @@
   "properties": {
     "versao": {
       "type": "string",
-      "enum": ["0.1.0", "0.2.0"]
+      "enum": ["0.1.0", "0.2.0", "0.3.0", "0.4.0", "0.5.0", "0.6.0", "0.7.0", "0.8.0"]
     },
     "target": {
       "type": "string",
@@ -68,13 +68,15 @@
       "properties": {
         "filesAnalyzed": { "type": "integer", "minimum": 0 },
         "inventoryDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "targetDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "publicationContextCoverage": { "type": "integer", "minimum": 0, "maximum": 100 },
         "scannersSummary": { "type": "object" },
         "findingsCount": { "type": "integer", "minimum": 0 },
         "findings": { "type": "array" },
         "exclusions": { "type": "array" },
         "limitations": { "type": "array" },
         "claimEvidenceMap": {
-          "$ref": "https://zunvio.com/schemas/claim-evidence-map-v1.json"
+          "$ref": "https://zunvio.com.br/schemas/claim-evidence-map-v1.json"
         },
         "decision": {
           "type": "object",
@@ -111,6 +113,16 @@
       "type": "object",
       "required": ["initialDigest", "finalDigest", "immutable", "differences"],
       "properties": {
+        "scope": { "type": "string", "minLength": 1 },
+        "algorithm": { "type": "string", "enum": ["SHA-256"] },
+        "measurements": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["INICIO_EXECUCAO", "FIM_EXECUCAO"] },
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true
+        },
+        "outsideTargetChanges": { "type": "string", "enum": ["PERMITIDAS_E_ESPERADAS"] },
         "initialDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
         "finalDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
         "immutable": { "type": "boolean" },
@@ -138,7 +150,7 @@
       }
     },
     "claimEvidenceMap": {
-      "$ref": "https://zunvio.com/schemas/claim-evidence-map-v1.json"
+      "$ref": "https://zunvio.com.br/schemas/claim-evidence-map-v1.json"
     },
     "coverageAndResidualRisk": {
       "type": "object",

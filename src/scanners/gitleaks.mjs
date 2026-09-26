@@ -1,10 +1,15 @@
-import { existsSync, readFileSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { executarProcessoSeguro } from '../utils/process-runner.mjs';
-import { criarAchadoNormalizado, projetarAchadoCanonico } from '../models/finding.mjs';
+import {
+  compararAchadosNormalizados,
+  criarAchadoNormalizado,
+  projetarAchadoCanonico
+} from '../models/finding.mjs';
+import { avaliarSignificadoSegredo } from '../models/finding-meaning.mjs';
 import {
   classificarCompletude,
   calcularDigestCanonico,
@@ -19,7 +24,12 @@ import {
  * `GIT_EXTERNAL_DIFF`, filtros de `.gitattributes`) seja executado durante a leitura.
  * Mesma postura defensiva já adotada em `src/delta/diff-parser.mjs`.
  */
-const OPCOES_LOG_HISTORICO = '--no-ext-diff --no-textconv';
+// LC-06: `--text` (arquivo marcado como binário no projeto não esconde conteúdo), `--diff-merges=first-parent`
+// (segredo introduzido só na resolução de um merge — perdido sem isto, sonda LC-06 12) e `-M` explícito (renomeação
+// determinística, independente da configuração do usuário). O universo esperado é calculado com as MESMAS opções.
+export const OPCOES_LOG_HISTORICO = '--no-ext-diff --no-textconv --text --diff-merges=first-parent -M';
+
+const MARCADOR_PLACEHOLDER = /(?:EXAMPLE|DUMMY|FAKE|SAMPLE|PLACEHOLDER|NOTREAL|MOCK|TEST)/i;
 
 // Ruleset versionado e auditável que o Gitleaks efetivamente usa (B5). O hash
 // deste arquivo é o configHash da identidade do sensor — não uma string fabricada
@@ -42,15 +52,18 @@ function configHashGitleaks() {
  * completude. Nada é inventado: versão vem do binário, configHash vem do arquivo
  * de regras realmente passado ao Gitleaks, digests são determinísticos.
  */
-function montarIdentidadeGitleaks({ versao, status, achados }) {
+export function montarIdentidadeGitleaks({ versao, status, achados, id = 'gitleaks', configHash }) {
   return Object.freeze({
-    id: 'gitleaks',
+    id,
     versao: versao ?? null,
     // configHash só é preenchido quando o sensor concluiu (config efetivamente
     // usada); sem execução, permanece NÃO COMPROVADO (null) — B5.
-    configHash: status === 'SUCCESS' ? configHashGitleaks() : null,
-    findingsDigest: status === 'SUCCESS' ? calcularDigestCanonico(achados.map(projetarAchadoCanonico)) : null,
-    completion: classificarCompletude(status, achados.length)
+    configHash: status === 'SUCCESS' ? (configHash !== undefined ? configHash : configHashGitleaks()) : null,
+    findingsDigest: status === 'SUCCESS'
+      ? calcularDigestCanonico([...achados].sort(compararAchadosNormalizados).map(projetarAchadoCanonico))
+      : null,
+    // LC-06: NOT_RUN (alvo sem histórico a varrer) não começou nada — NOT_STARTED, nunca FAILED nem CLEAN.
+    completion: status === 'NOT_RUN' ? 'NOT_STARTED' : classificarCompletude(status, achados.length)
   });
 }
 
@@ -239,6 +252,62 @@ export function deduplicarAchadosGitleaks(vazamentosBrutos, raizAlvo, lerLinhasD
   return resolvidos;
 }
 
+function extrairIdentificadorDeclarador(linha, posicaoAchado) {
+  if (/^(?:\/\/|#|\/\*|\*)/.test(linha.trimStart())) return null;
+
+  const candidatos = [];
+  const atribuicao = /\b([A-Za-z_$][\w$]*)\s*(?::\s*[^=]+)?=(?!=)/g;
+  const chaveDeObjeto = /(?:^|[,{])\s*(?:["']([^"']+)["']|([A-Za-z_$][\w$-]*))\s*:/g;
+
+  for (const padrao of [atribuicao, chaveDeObjeto]) {
+    for (const correspondencia of linha.matchAll(padrao)) {
+      const identificador = correspondencia[1] || correspondencia[2];
+      const indice = correspondencia.index + correspondencia[0].indexOf(identificador);
+      if (indice > posicaoAchado) continue;
+      candidatos.push({
+        identificador,
+        indice
+      });
+    }
+  }
+
+  candidatos.sort((a, b) => b.indice - a.indice);
+  return candidatos[0]?.identificador || null;
+}
+
+function identificadorDoAchadoEhPlaceholder({ raizAlvo, arquivoBruto, startLine, startColumn, segredo }) {
+  if (!raizAlvo || !arquivoBruto) return false;
+
+  try {
+    const raizReal = realpathSync(resolve(raizAlvo));
+    const arquivoReal = realpathSync(resolve(raizReal, arquivoBruto));
+    const caminhoDentroDaRaiz = relative(raizReal, arquivoReal);
+    if (!caminhoDentroDaRaiz || /^\.\.(?:[\\/]|$)/.test(caminhoDentroDaRaiz) || isAbsolute(caminhoDentroDaRaiz)) {
+      return false;
+    }
+
+    const numeroLinha = Number(startLine);
+    if (!Number.isInteger(numeroLinha) || numeroLinha < 1) return false;
+    const linha = readFileSync(arquivoReal, 'utf8').split(/\r?\n/)[numeroLinha - 1];
+    if (linha === undefined) return false;
+
+    const indiceSegredo = typeof segredo === 'string' && segredo ? linha.indexOf(segredo) : -1;
+    const coluna = Number(startColumn);
+    const posicaoAchado = indiceSegredo !== -1
+      ? indiceSegredo
+      : Number.isInteger(coluna) && coluna > 0
+        ? Math.min(coluna - 1, linha.length)
+        : null;
+    if (posicaoAchado === null) return false;
+
+    const identificador = extrairIdentificadorDeclarador(linha, posicaoAchado);
+    return identificador !== null && MARCADOR_PLACEHOLDER.test(identificador);
+  } catch {
+    // Sem evidência local confiável, mantém a severidade original (fail-safe).
+    return false;
+  }
+}
+
 /**
  * Mapeia o resultado bruto do Gitleaks para o schema unificado do ZUNVIO.
  * @param {object[]} vazamentosBrutos - Lista de achados em formato JSON do Gitleaks.
@@ -279,15 +348,33 @@ export function normalizarAchadosGitleaks(vazamentosBrutos, raizAlvo) {
     // de localização/commit — nunca o segredo (PER-207, P2 do Codex).
     const identidadeExtra = [commit || 'working-tree', startColumn ?? '-', endColumn ?? '-'].join(':');
 
+    const possivelPlaceholder = identificadorDoAchadoEhPlaceholder({
+      raizAlvo,
+      arquivoBruto,
+      startLine,
+      startColumn,
+      segredo: campoBruto(vazamento, 'Secret', 'secret')
+    });
+    if (possivelPlaceholder && (severity === 'CRITICAL' || severity === 'HIGH')) {
+      severity = 'LOW';
+    }
+    // PL-03: significado explícito (REVISAO_NECESSARIA): forma de credencial demonstrada, validade não. A mensagem
+    // não afirma que o valor É uma credencial válida; o contexto do arquivo (teste/exemplo) nunca afasta um segredo.
+    const significado = avaliarSignificadoSegredo({ filePath: caminhoRelativo, possivelPlaceholder });
+
     return criarAchadoNormalizado({
-      scanner: 'gitleaks',
+      // LC-06: quem viu o achado no estado atual dos arquivos é o scanner próprio; o que só existe no histórico é do
+      // Gitleaks (a proveniência de commit fica em rawDetails nos dois casos).
+      scanner: origem === 'historico' ? 'gitleaks' : 'zunvio-segredos',
       ruleId,
       severity,
-      message: `${descricao} (${ruleId})`,
+      message: `${significado.explicacao} Regra: ${descricao} (${ruleId}).`,
+      significado,
       filePath: caminhoRelativo,
       startLine,
       endLine,
       identidadeExtra,
+      possivelPlaceholder,
       rawDetails: {
         commit,
         commitDate,
@@ -304,19 +391,18 @@ export function normalizarAchadosGitleaks(vazamentosBrutos, raizAlvo) {
 }
 
 /**
- * Monta os argumentos do Gitleaks para uma passada de varredura.
- * Usa o subcomando `detect` (estável desde a v8.2, presente na v8.18 usada como
- * referência na PER-207; os subcomandos `git`/`dir` só existem a partir da v8.19).
- * @param {string} targetAbsoluto - Caminho canônico do projeto.
- * @param {string} reportPath - Caminho do relatório JSON temporário.
- * @param {{ historico: boolean }} passada
+ * Argumentos do Gitleaks para a passada de HISTÓRICO (LC-06: o working tree é do scanner próprio).
+ * Usa o subcomando `detect` (estável desde a v8.2, presente na v8.18.4 fixada no bootstrap).
+ * `--ignore-gitleaks-allow`: comentário `gitleaks:allow` do projeto não reduz a cobertura do auditor (decisão LC-06).
+ * @param {string} fonte - clone --bare do alvo (sem working tree ⇒ sem `.gitleaksignore` do projeto na raiz).
+ * @param {string} reportPath
  * @returns {string[]}
  */
-function montarArgumentos(targetAbsoluto, reportPath, { historico }) {
-  const args = [
+function montarArgumentosHistorico(fonte, reportPath) {
+  return [
     'detect',
     '--source',
-    targetAbsoluto,
+    fonte,
     '--config',
     REGRA_GITLEAKS_LOCAL,
     '--report-format',
@@ -324,21 +410,11 @@ function montarArgumentos(targetAbsoluto, reportPath, { historico }) {
     '--report-path',
     reportPath,
     '--no-banner',
-    '--redact'
+    '--redact',
+    '--ignore-gitleaks-allow',
+    '--log-opts',
+    OPCOES_LOG_HISTORICO
   ];
-
-  if (historico) {
-    // Profundidade: todo o histórico alcançável a partir do HEAD (padrão do git log -p).
-    // Decisão registrada em docs/checkpoints/PER-207.md. Para restringir a profundidade
-    // (ex.: '--since', '-n'), acrescentar aqui — mantendo sempre OPCOES_LOG_HISTORICO
-    // como prefixo e nunca aceitando o valor a partir do projeto analisado.
-    args.push('--log-opts', OPCOES_LOG_HISTORICO);
-  } else {
-    // Varre o working tree como diretório de arquivos, sem tocar no histórico.
-    args.push('--no-git');
-  }
-
-  return args;
 }
 
 /**
@@ -442,118 +518,166 @@ function detectarRepositorioGit(targetAbsoluto, runner) {
   return { ehRepoRaiz: dentroDeRepo && prefixo === '', dentroDeRepo, gitDisponivel: true };
 }
 
+/** Estados da cobertura do histórico (LC-06). */
+export const COBERTURA_HISTORICO = Object.freeze({
+  COMPLETA: 'COMPLETE',
+  DESCONHECIDA: 'UNKNOWN'
+});
+
+/** Motivos de cobertura histórica não demonstrada (conjunto fechado; o contrato 1.4.0 usa os mesmos). */
+export const MOTIVO_HISTORICO = Object.freeze({
+  SHALLOW: 'SHALLOW_HISTORY',
+  NAO_DETERMINADO: 'HISTORY_NOT_DETERMINED',
+  DIVERGENCIA: 'HISTORY_COVERAGE_MISMATCH'
+});
+
 /**
- * Executa o scanner Gitleaks sobre o alvo de forma estritamente somente leitura.
- *
- * Quando o alvo é a raiz de um repositório Git, varre o working tree E o histórico
- * completo (git log). Um segredo commitado e depois removido do working tree
- * permanece no histórico e é detectado — cenário da PER-207. Fora de um repositório
- * Git, ou quando o alvo é um subdiretório de um repositório, varre apenas o working
- * tree (ver `detectarRepositorioGit`).
- *
- * Falha de qualquer passada planejada é fail-closed: o resultado global vira
- * ERROR/UNAVAILABLE/TIMEOUT (portão "NÃO COMPROVADO"), nunca "sem achados".
- *
- * @param {string} targetPath - Caminho do projeto a ser analisado.
- * @param {object} [opcoes={}] - Opções customizadas.
- * @param {string} [opcoes.executavel='gitleaks'] - Caminho ou nome do binário.
- * @param {Function} [opcoes.runner=executarProcessoSeguro] - Função de execução (injeção em testes).
- * @param {number} [opcoes.timeout=30000] - Timeout por passada, em ms.
- * @returns {Promise<{ status: 'SUCCESS' | 'ERROR' | 'UNAVAILABLE' | 'TIMEOUT', disponivel: boolean, achados: Array<ReturnType<typeof criarAchadoNormalizado>>, duracaoMs: number, erro: string | null, escopo: { workingTree: boolean, historico: boolean } }>}
+ * Commits do histórico que TÊM o que varrer, calculados pelo próprio Git com as MESMAS opções de log do Gitleaks:
+ * commits alcançáveis a partir do HEAD com pelo menos uma mudança que não seja só a remoção de um arquivo. Medido
+ * contra o Gitleaks 8.18.4 (sondas LC-06 12 e 13): é exatamente o conjunto que ele declara em "N commits scanned"
+ * (arquivo novo, modificado, renomeado, binário com --text, troca de modo; sem remoção pura, sem commit vazio; merge
+ * pelo diff contra o primeiro pai).
+ * @returns {{ total: number, esperados: number, digest: string } | null}
  */
-export async function executarScannerGitleaks(targetPath, opcoes = {}) {
+function commitsDoHistorico(repositorio, runner, timeout) {
+  const log = runner('git', ['-C', repositorio, 'log', '--format=%x01%H', '--name-status', ...OPCOES_LOG_HISTORICO.split(' '), 'HEAD'], { timeout, maxBuffer: 512 * 1024 * 1024 });
+  if (log.status !== 'SUCCESS' || log.exitCode !== 0) return null;
+  const blocos = (log.stdout || '').split('\x01').slice(1);
+  const esperados = [];
+  for (const bloco of blocos) {
+    const [cabeca, ...linhas] = bloco.split(/\r?\n/);
+    const sha = cabeca.trim();
+    if (!/^[0-9a-f]{40}$/.test(sha)) return null;
+    if (linhas.some((l) => l.includes('\t') && !l.startsWith('D'))) esperados.push(sha);
+  }
+  return { total: blocos.length, esperados: esperados.length, digest: hashTexto(esperados.join('\n')) };
+}
+
+function removerSilencioso(caminho) {
+  try {
+    rmSync(caminho, { recursive: true, force: true });
+  } catch {
+    // limpeza best-effort de diretório temporário
+  }
+}
+
+/**
+ * Varre o HISTÓRICO Git do alvo com o Gitleaks e demonstra (ou não) a cobertura dele.
+ *
+ * Cobertura histórica NÃO é inferida da declaração do Gitleaks (decisão LC-06): o ZUNVIO compara o universo histórico
+ * esperado, calculado pelo Git, com o que o Gitleaks declara ter varrido. COMPLETA só quando: o alvo é a raiz de um
+ * repositório, o repositório NÃO é shallow, o clone varrido tem o mesmo HEAD e o mesmo número de commits do alvo, e
+ * commits varridos = commits esperados. Qualquer outra situação é DESCONHECIDA, com motivo — nunca cobertura afirmada.
+ *
+ * Neutralização de supressões do projeto: a varredura é feita sobre um clone --bare (sem working tree ⇒ o
+ * `.gitleaksignore` do projeto não existe na raiz varrida; `refs/replace` e grafts do alvo não são clonados), com o
+ * diretório de trabalho do processo num diretório vazio do ZUNVIO e `--ignore-gitleaks-allow`.
+ *
+ * Fail-closed: falha de execução é ERROR/UNAVAILABLE/TIMEOUT (portão NÃO COMPROVADO), nunca "sem achados".
+ *
+ * @param {string} targetPath
+ * @param {object} [opcoes]
+ * @param {string} [opcoes.executavel='gitleaks']
+ * @param {Function} [opcoes.runner=executarProcessoSeguro]
+ * @param {number} [opcoes.timeout=30000] - timeout do Gitleaks, em ms.
+ * @param {number} [opcoes.timeoutGit=60000] - timeout de cada comando git (clone, log), em ms.
+ * @returns {Promise<{ status: string, disponivel: boolean, vazamentos: object[], versao: string|null, cobertura: object, erro: string|null, duracaoMs: number }>}
+ */
+export async function executarHistoricoGitleaks(targetPath, opcoes = {}) {
   const inicio = Date.now();
   const runner = opcoes.runner || executarProcessoSeguro;
   const executavel = opcoes.executavel || 'gitleaks';
   const timeout = opcoes.timeout || 30_000;
+  const timeoutGit = opcoes.timeoutGit || 60_000;
   const targetAbsoluto = resolve(targetPath);
+  const git = (args, extra = {}) => runner('git', args, { timeout: timeoutGit, ...extra });
+  const ok = (r) => r && r.status === 'SUCCESS' && r.exitCode === 0;
+  const resultado = (status, cobertura, extra = {}) => ({
+    status,
+    disponivel: status !== 'UNAVAILABLE',
+    vazamentos: [],
+    versao: null,
+    erro: null,
+    ...extra,
+    cobertura: Object.freeze({ applicable: true, shallow: null, headCommit: null, commitsTotal: null, commitsExpected: null, commitsScanned: null, expectedDigest: null, reason: null, ...cobertura }),
+    duracaoMs: Date.now() - inicio
+  });
+  const desconhecida = (motivo, extra = {}) => ({ status: COBERTURA_HISTORICO.DESCONHECIDA, reason: motivo, ...extra });
 
-  // Versão real do binário (best-effort; null quando indisponível ou sem semver).
+  const { ehRepoRaiz, dentroDeRepo, gitDisponivel } = detectarRepositorioGit(targetAbsoluto, runner);
+  if (!gitDisponivel) {
+    return resultado('UNAVAILABLE', desconhecida(MOTIVO_HISTORICO.NAO_DETERMINADO), {
+      erro: 'O binário git não está disponível: não é possível determinar nem varrer o histórico do alvo.'
+    });
+  }
+  if (!dentroDeRepo) {
+    // Alvo sem repositório Git: o histórico do release NÃO está no alvo e não pode ser varrido. Não é "histórico vazio":
+    // o release pode ter histórico (e segredos nele) em outro lugar — a proveniência pode até vir de evidência externa.
+    // Universo histórico não determinável ⇒ UNKNOWN (decisão LC-06), nunca cobertura afirmada.
+    return resultado('NOT_RUN', desconhecida(MOTIVO_HISTORICO.NAO_DETERMINADO, { applicable: false }));
+  }
+  if (!ehRepoRaiz) {
+    // Subdiretório de um repositório: o histórico existe, mas não é varrido (seria o de código não relacionado).
+    return resultado('NOT_RUN', desconhecida(MOTIVO_HISTORICO.NAO_DETERMINADO));
+  }
+
   const resVersao = runner(executavel, ['version'], { cwd: targetAbsoluto, timeout: 15_000 });
   const versao = extrairVersaoSemver(resVersao?.stdout);
+  const shallowAlvo = git(['-C', targetAbsoluto, 'rev-parse', '--is-shallow-repository']);
+  const headAlvo = git(['-C', targetAbsoluto, 'rev-parse', '--verify', '--quiet', 'HEAD^{commit}']);
+  if (!ok(shallowAlvo)) return resultado('ERROR', desconhecida(MOTIVO_HISTORICO.NAO_DETERMINADO), { versao, erro: 'Não foi possível determinar se o repositório é shallow.' });
+  const shallow = (shallowAlvo.stdout || '').trim() === 'true';
+  if (!ok(headAlvo)) {
+    // Repositório sem nenhum commit: não há release versionado a comparar com o histórico — não determinável.
+    return resultado('NOT_RUN', desconhecida(shallow ? MOTIVO_HISTORICO.SHALLOW : MOTIVO_HISTORICO.NAO_DETERMINADO, { shallow, commitsTotal: 0 }), { versao });
+  }
+  const head = (headAlvo.stdout || '').trim();
+  const contagemAlvo = git(['-C', targetAbsoluto, 'rev-list', '--count', 'HEAD'], { env: { GIT_NO_REPLACE_OBJECTS: '1' } });
 
-  const { ehRepoRaiz, gitDisponivel } = detectarRepositorioGit(targetAbsoluto, runner);
-
-  const passadas = [{ chave: 'workingTree', historico: false }];
-  if (ehRepoRaiz) passadas.push({ chave: 'historico', historico: true });
-
-  const escopo = { workingTree: false, historico: false };
-  const relatoriosTemp = [];
-  const vazamentosAgregados = [];
-
+  const temporarios = [];
+  const bare = join(tmpdir(), `zunvio-historico-${randomBytes(8).toString('hex')}.git`);
+  const cwdVazio = join(tmpdir(), `zunvio-historico-cwd-${randomBytes(8).toString('hex')}`);
+  const reportPath = join(tmpdir(), `zunvio-gitleaks-historico-${randomBytes(6).toString('hex')}.json`);
+  temporarios.push(bare, cwdVazio, reportPath);
   try {
-    for (const passada of passadas) {
-      if (passada.historico && !gitDisponivel) {
-        return {
-          status: 'UNAVAILABLE',
-          disponivel: false,
-          achados: [],
-          duracaoMs: Date.now() - inicio,
-          erro: 'O alvo é um repositório Git, mas o binário git não está disponível para varrer o histórico; a evidência de segredos no histórico não pôde ser produzida.',
-          escopo,
-          identidade: montarIdentidadeGitleaks({ versao, status: 'UNAVAILABLE', achados: [] })
-        };
-      }
+    mkdirSync(cwdVazio, { recursive: true });
+    const clone = git(['clone', '--quiet', '--bare', '--no-local', '--', targetAbsoluto, bare], { cwd: cwdVazio });
+    if (!ok(clone)) {
+      return resultado('ERROR', desconhecida(MOTIVO_HISTORICO.NAO_DETERMINADO, { shallow, headCommit: head }), { versao, erro: 'Não foi possível clonar o repositório para varrer o histórico sem as supressões do projeto.' });
+    }
+    const headClone = git(['-C', bare, 'rev-parse', '--verify', '--quiet', 'HEAD^{commit}']);
+    const contagemClone = git(['-C', bare, 'rev-list', '--count', 'HEAD']);
+    const shallowClone = git(['-C', bare, 'rev-parse', '--is-shallow-repository']);
+    const universo = commitsDoHistorico(bare, runner, timeoutGit);
+    const cloneFiel = ok(headClone) && (headClone.stdout || '').trim() === head
+      && ok(contagemClone) && ok(contagemAlvo) && (contagemClone.stdout || '').trim() === (contagemAlvo.stdout || '').trim();
 
-      const reportPath = join(tmpdir(), `zunvio-gitleaks-${passada.chave}-${randomBytes(6).toString('hex')}.json`);
-      relatoriosTemp.push(reportPath);
-
-      const resultado = runner(executavel, montarArgumentos(targetAbsoluto, reportPath, passada), {
-        cwd: targetAbsoluto,
-        timeout
+    const saida = runner(executavel, montarArgumentosHistorico(bare, reportPath), { cwd: cwdVazio, timeout });
+    const interpretado = interpretarResultadoScan(saida, reportPath);
+    if (!interpretado.ok) {
+      const statusFinal = interpretado.tipo === 'SUCCESS' ? 'ERROR' : interpretado.tipo;
+      return resultado(statusFinal, desconhecida(MOTIVO_HISTORICO.NAO_DETERMINADO, { shallow, headCommit: head }), {
+        versao,
+        erro: `Varredura de histórico Git não concluída: ${interpretado.erro || 'motivo desconhecido'}`
       });
-
-      const interpretado = interpretarResultadoScan(resultado, reportPath);
-
-      if (!interpretado.ok) {
-        const contexto = passada.historico ? 'de histórico Git' : 'do working tree';
-        const statusFinal = interpretado.tipo === 'SUCCESS' ? 'ERROR' : interpretado.tipo;
-        return {
-          status: statusFinal,
-          disponivel: interpretado.tipo !== 'UNAVAILABLE',
-          achados: [],
-          duracaoMs: Date.now() - inicio,
-          erro: `Varredura ${contexto} não concluída: ${interpretado.erro || 'motivo desconhecido'}`,
-          escopo,
-          identidade: montarIdentidadeGitleaks({ versao, status: statusFinal, achados: [] })
-        };
-      }
-
-      escopo[passada.chave] = true;
-      vazamentosAgregados.push(...interpretado.vazamentos);
     }
-
-    // Resolve as duas passadas: preserva achados genuinamente distintos (credencial
-    // rotacionada no mesmo lugar, segredos distintos na mesma linha), funde só a
-    // duplicata PROVADA entre working tree e histórico (trecho da linha igual ao de
-    // HEAD), e mantém a proveniência de commit (PER-207, P2 do Codex — ver
-    // deduplicarAchadosGitleaks).
-    const lerLinhasDeRef = (ref, arquivoRel) => {
-      const r = runner('git', ['-C', targetAbsoluto, 'show', `${ref}:${arquivoRel}`], { timeout: 5000 });
-      if (!r || r.status !== 'SUCCESS' || r.exitCode !== 0 || typeof r.stdout !== 'string') return null;
-      return r.stdout.split(/\r?\n/);
+    const varridos = Number(((saida.stderr || '').replace(/\u001b\[[0-9;]*m/g, '').match(/(\d+) commits scanned/) || [])[1]);
+    const commitsScanned = Number.isInteger(varridos) ? varridos : null;
+    const base = {
+      shallow: shallow || (ok(shallowClone) && (shallowClone.stdout || '').trim() === 'true'),
+      headCommit: head,
+      commitsTotal: universo ? universo.total : null,
+      commitsExpected: universo ? universo.esperados : null,
+      commitsScanned,
+      expectedDigest: universo ? universo.digest : null
     };
-    const resolvidos = deduplicarAchadosGitleaks(vazamentosAgregados, targetAbsoluto, lerLinhasDeRef);
-    const achados = normalizarAchadosGitleaks(resolvidos, targetAbsoluto);
-
-    return {
-      status: 'SUCCESS',
-      disponivel: true,
-      achados,
-      duracaoMs: Date.now() - inicio,
-      erro: null,
-      escopo,
-      identidade: montarIdentidadeGitleaks({ versao, status: 'SUCCESS', achados })
-    };
+    let cobertura;
+    if (base.shallow) cobertura = { ...base, status: COBERTURA_HISTORICO.DESCONHECIDA, reason: MOTIVO_HISTORICO.SHALLOW };
+    else if (!cloneFiel || !universo || commitsScanned === null) cobertura = { ...base, status: COBERTURA_HISTORICO.DESCONHECIDA, reason: MOTIVO_HISTORICO.NAO_DETERMINADO };
+    else if (commitsScanned !== universo.esperados) cobertura = { ...base, status: COBERTURA_HISTORICO.DESCONHECIDA, reason: MOTIVO_HISTORICO.DIVERGENCIA };
+    else cobertura = { ...base, status: COBERTURA_HISTORICO.COMPLETA, reason: null };
+    return resultado('SUCCESS', cobertura, { versao, vazamentos: interpretado.vazamentos });
   } finally {
-    for (const reportPath of relatoriosTemp) {
-      if (existsSync(reportPath)) {
-        try {
-          unlinkSync(reportPath);
-        } catch {
-          // limpeza best-effort do arquivo temporário
-        }
-      }
-    }
+    for (const t of temporarios) removerSilencioso(t);
   }
 }

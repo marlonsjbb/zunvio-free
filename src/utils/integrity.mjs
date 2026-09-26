@@ -206,8 +206,10 @@ export function calcularDigestDiretorio(dirPath, opcoes = {}) {
  * @param {string} digestInicial - Digest calculado antes da operação.
  * @returns {{ inalterado: boolean, digestInicial: string, digestFinal: string, diferencas: string[] }}
  */
-export function verificarImutabilidade(dirPath, digestInicial) {
-  const { digest: digestFinal } = calcularDigestDiretorio(dirPath);
+// PL-01: o snapshot final usa os MESMOS limites do inicial (mesmo perímetro); com limites diferentes, os digests
+// cobririam conjuntos diferentes e a integridade pareceria violada sem ter sido.
+export function verificarImutabilidade(dirPath, digestInicial, limites = {}) {
+  const { digest: digestFinal } = calcularDigestDiretorio(dirPath, limites);
   const inalterado = digestInicial === digestFinal;
 
   return {

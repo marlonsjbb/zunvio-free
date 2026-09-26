@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://zunvio.com/schemas/claim-evidence-map-v1.json",
+  "$id": "https://zunvio.com.br/schemas/claim-evidence-map-v1.json",
   "title": "ZUNVIO Claim-to-Evidence Map v1",
   "description": "Mapa determinístico entre as 12 declarações do Contrato de Publicação, evidências observadas e conclusão por claim.",
   "type": "object",

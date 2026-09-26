@@ -1,0 +1,12 @@
+{
+  "funcionamento": {
+    "disponivel": true,
+    "aprovado": true,
+    "descricao": "Testes de demonstração concluídos externamente: 3 pass, 0 fail."
+  },
+  "manutencaoDocumentacao": {
+    "disponivel": true,
+    "aprovado": true,
+    "descricao": "Documentação de demonstração presente e revisada."
+  }
+}

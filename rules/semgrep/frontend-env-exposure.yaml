@@ -1,0 +1,57 @@
+rules:
+  - id: zunvio-env.dump-to-global
+    languages:
+      - javascript
+      - typescript
+    message: "process.env inteiro (ou window/global) copiado para um objeto exposto ao cliente. Isso vaza TODAS as variáveis de ambiente do servidor para o frontend, inclusive as que não têm prefixo público."
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: window.$ANY = { ...process.env }
+          - pattern: window.$ANY = process.env
+          - pattern: globalThis.$ANY = { ...process.env }
+          - pattern: globalThis.$ANY = process.env
+    metadata:
+      category: security
+      cwe: "CWE-200: Exposure of Sensitive Information to an Unauthorized Actor"
+
+  - id: zunvio-env.dump-in-response
+    languages:
+      - javascript
+      - typescript
+    message: "process.env inteiro (ou serializado) enviado numa resposta HTTP. Vaza variáveis de ambiente do servidor pra quem chamar essa rota."
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: $RES.json(process.env)
+          - pattern: $RES.send(process.env)
+          - pattern: JSON.stringify(process.env)
+    metadata:
+      category: security
+      cwe: "CWE-200: Exposure of Sensitive Information to an Unauthorized Actor"
+
+  - id: zunvio-env.interpolated-in-client-script
+    languages:
+      - javascript
+      - typescript
+    message: "Variável de process.env interpolada dentro de um template literal que parece HTML/<script> — padrão comum de vazamento de segredo do servidor pro HTML enviado ao navegador."
+    severity: WARNING
+    patterns:
+      - pattern-regex: '<script[^>]*>[\s\S]{0,200}\$\{\s*process\.env\.[A-Z0-9_]+\s*\}'
+    metadata:
+      category: security
+      cwe: "CWE-200: Exposure of Sensitive Information to an Unauthorized Actor"
+
+  - id: zunvio-env.webpack-define-raw-process-env
+    languages:
+      - javascript
+      - typescript
+    message: "DefinePlugin/config de bundler embutindo `process.env` inteiro (sem selecionar chaves específicas) diretamente no bundle do cliente."
+    severity: WARNING
+    patterns:
+      - pattern-either:
+          - pattern: 'new webpack.DefinePlugin({ ..., "process.env": JSON.stringify(process.env), ... })'
+          - pattern: 'new DefinePlugin({ ..., "process.env": JSON.stringify(process.env), ... })'
+    metadata:
+      category: security
+      cwe: "CWE-200: Exposure of Sensitive Information to an Unauthorized Actor"
