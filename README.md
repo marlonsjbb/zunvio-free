@@ -1,6 +1,8 @@
 <div align="center">
 
-# ZUNVIO
+<img src="marca/zunvio-wordmark-color.png" alt="ZUNVIO" width="480" />
+
+<br />
 
 ### Confiança antes de publicar.
 
