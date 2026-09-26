@@ -1,124 +1,216 @@
-# ZUNVIO Score
+<div align="center">
 
-Responde, com prova, se uma versão exata do seu projeto está pronta para publicar.
+# ZUNVIO
 
-A análise é uma leitura estática local: roda na sua máquina e só lê o projeto (não executa nem altera nada). O ZUNVIO não envia intencionalmente o código analisado a serviços externos como parte dessa análise.
-O resultado é uma decisão — `PUBLICAR`, `NÃO PUBLICAR` ou `INCONCLUSIVO` — acompanhada do que a sustenta e do que ficou
-de fora. O resultado separa achados do cliente, limites de cobertura do motor e falhas do próprio motor, e sai também
-como um artefato JSON verificável.
+### Confiança antes de publicar.
 
----
-
-## Começar
-
-Na pasta do projeto (um repositório Git):
+**Analise uma versão exata do seu projeto e descubra, com evidências, se ela está pronta para publicação.**
 
 ```bash
 npx zunvio-score
 ```
 
-Ou indique a pasta:
+[Site](https://zunvio.com.br/) · [Termos de uso](LICENSE.md)
+
+</div>
+
+---
+
+## O que é o ZUNVIO?
+
+Criar software ficou mais rápido. Saber se ele está realmente pronto para publicar continua difícil.
+
+O **ZUNVIO** faz uma análise estática local do projeto e transforma o resultado em uma decisão simples:
+
+| Decisão | O que significa |
+|---|---|
+| **PUBLICAR** | As verificações obrigatórias foram avaliadas e nada impede a publicação dentro do escopo analisado. |
+| **NÃO PUBLICAR** | Há risco demonstrado, revisão pendente ou evidência obrigatória ausente. |
+| **INCONCLUSIVO** | O ZUNVIO não conseguiu analisar o necessário para sustentar uma decisão. |
+
+A regra é simples: **ausência de evidência nunca é tratada como sucesso.**
+
+O ZUNVIO não executa nem altera o projeto durante a análise. O código é analisado localmente e não é intencionalmente enviado aos serviços do ZUNVIO como parte dessa análise.
+
+## Comece em um comando
+
+Na raiz de um repositório Git:
+
+```bash
+npx zunvio-score
+```
+
+Ou informe outra pasta:
 
 ```bash
 npx zunvio-score caminho/do/projeto
 ```
 
-Na primeira execução o ZUNVIO prepara os dois motores de análise, sem instalar nada fora da pasta `~/.zunvio`:
+Na primeira execução, o ZUNVIO prepara os motores necessários dentro de `~/.zunvio`.
 
-- **Gitleaks** (segredos): baixado do release oficial, com o SHA-256 conferido.
-- **Semgrep** (segurança do código): instalado num ambiente Python isolado (~150 MB).
+**Requisitos**
 
-Requisitos: **Node.js 20.10+**, **Git** e **Python 3.10+** (usado só para instalar o Semgrep). Sem um dos motores a
-análise ainda roda, mas a parte correspondente fica `NÃO COMPROVADO` e a decisão não chega a `PUBLICAR`.
+- Node.js 20.10+
+- Git
+- Python 3.10+ para o ambiente isolado do Semgrep
 
-## Os comandos
-
-| Comando | Para quê |
-|---|---|
-| `npx zunvio-score [pasta]` | Analisa o projeto e mostra a decisão, os achados e o que fazer agora. |
-| `npx zunvio-score init [pasta]` | Perguntas em linguagem simples sobre o projeto: o que ele faz, quem usa, que dados trata, como foi testado. |
-| `npx zunvio-score revisar <chave> [pasta]` | Registra a sua revisão de um item marcado **REVISÃO NECESSÁRIA**. |
-| `npx zunvio-score glossario` | Explica os termos usados no resultado. |
-| `npx zunvio-score verify <arquivo.json>` | Confere se um resultado em JSON não foi alterado. |
-
-### `init`: descrever o projeto
-
-Sem saber o que o projeto é e como foi testado, o ZUNVIO não tem como afirmar que ele está pronto — e diz isso.
-O `init` faz as perguntas e explica, em cada uma, por que ela importa. As respostas ficam **fora do repositório**
-(em `~/.zunvio/projetos/`), valem para a versão analisada e são tratadas como **declaração sua**, não como prova.
-O resultado mostra o que foi declarado e o que ainda precisa ser comprovado.
-
-### `revisar`: registrar a revisão de um item
-
-Alguns achados vêm como **REVISÃO NECESSÁRIA**: o padrão existe no código, mas o risco não foi demonstrado (por exemplo,
-uma URL montada a partir de uma variável cuja origem não se conhece). Se você revisou e não é risco no seu contexto,
-cada item mostra o comando pronto, com a chave dele:
-
-```bash
-npx zunvio-score revisar 3f9a1c0b7d2e4a65 --justificativa "o host vem da configuração interna, não do usuário"
-```
-
-A revisão é **evidência adicional, não prova de segurança**:
-
-- vale só para **REVISÃO NECESSÁRIA** — um **RISCO DEMONSTRADO** nunca é liberado por revisão;
-- o achado continua no resultado, marcado como "revisado por humano e aceito neste contexto", com autor, data e justificativa;
-- se o código em volta do item mudar, a revisão perde a validade e o item volta a impedir a publicação;
-- fica no arquivo `.zunvio-baseline.json` do projeto, para ser versionada junto com o código.
+Se algum motor obrigatório não estiver disponível, o ZUNVIO não transforma essa ausência em aprovação: a cobertura correspondente fica **NÃO COMPROVADA**.
 
 ## O que você recebe
 
-- **Decisão e motivo principal**, com o que fazer agora.
-- **Achados** explicados em português: o que foi encontrado, por que importa e o que foi (ou não) demonstrado.
-- **Score e cobertura**: o score é secundário — score alto não compensa um bloqueio.
-- **Relatório HTML** para compartilhar, gravado fora do projeto (o caminho aparece no fim da análise). É gerado
-  localmente e mostra decisão, cobertura, achados, revisões, limitações, versão do motor e o hash que protege o resultado.
-- **Evolução** desde a análise anterior: achados novos, resolvidos e persistentes, e mudança de score e de decisão.
-- **Resultado em JSON** (`--json`), com hash canônico, verificável depois com `npx zunvio-score verify`.
+Uma análise não termina apenas com um score. O ZUNVIO entrega:
 
-## Como ler o resultado
+- **decisão de publicação**, acompanhada do motivo principal;
+- **achados em português**, explicando o que foi observado e por que importa;
+- **cobertura da análise**, incluindo o que não pôde ser verificado;
+- **próxima ação**, quando a evidência permite indicá-la;
+- **evolução entre análises**, com itens novos, resolvidos e persistentes;
+- **relatório HTML local** para leitura e compartilhamento;
+- **Evidence Pack em JSON**, com integridade verificável.
 
-Códigos de saída:
+O score é secundário. **Uma pontuação alta nunca compensa um bloqueio.**
 
-| Código | Decisão | Significado |
-|---|---|---|
-| `0` | `PUBLICAR` | Tudo o que é obrigatório foi avaliado e nada impede a publicação. |
-| `1` | `NÃO PUBLICAR` | Algo no projeto impede a publicação: risco demonstrado, revisão pendente ou evidência que falta. |
-| `2` | `INCONCLUSIVO` | A análise não conseguiu cobrir o necessário (motor ausente, falha, tempo esgotado). |
-| `3` | erro | Uso inválido ou falha operacional. |
+## Um resultado que não esconde incerteza
 
-Cada verificação termina em um destes estados:
+Cada verificação termina em um estado explícito:
 
 | Estado | Significado |
 |---|---|
-| `ATENDE` | Evidência válida e suficiente. |
-| `NÃO ATENDE` | A evidência mostra um problema. |
-| `NÃO COMPROVADO` | Evidência ausente, inválida ou não produzida. Ausência de evidência nunca vale como sucesso. |
-| `NÃO APLICÁVEL` | Não se aplica a este projeto, com justificativa registrada. |
+| **ATENDE** | Há evidência válida e suficiente. |
+| **NÃO ATENDE** | A evidência demonstra um problema. |
+| **NÃO COMPROVADO** | A evidência é ausente, inválida ou insuficiente. |
+| **NÃO APLICÁVEL** | A verificação não se aplica, com justificativa registrada. |
 
-## Opções
+Arquivos lidos apenas parcialmente são identificados. Falhas e limites de cobertura não viram aprovação silenciosa.
+
+## Fluxo recomendado
+
+### 1. Analise
+
+```bash
+npx zunvio-score
+```
+
+Leia a decisão, os achados e a cobertura.
+
+### 2. Descreva o contexto do projeto
+
+```bash
+npx zunvio-score init
+```
+
+O `init` faz perguntas em linguagem simples sobre o projeto, seus usuários, dados e testes.
+
+Essas respostas são **declarações do usuário**, não provas produzidas pelo ZUNVIO. Essa distinção permanece visível no resultado.
+
+### 3. Corrija ou revise
+
+Quando existe **RISCO DEMONSTRADO**, ele precisa ser corrigido.
+
+Quando um item está em **REVISÃO NECESSÁRIA**, o ZUNVIO encontrou um padrão, mas não possui evidência suficiente para afirmar o risco. Depois de revisar o contexto, você pode registrar a decisão:
+
+```bash
+npx zunvio-score revisar <chave> --justificativa "motivo da revisão"
+```
+
+A revisão:
+
+- não apaga o achado;
+- não libera um **RISCO DEMONSTRADO**;
+- registra autor, data e justificativa;
+- perde validade se o contexto relevante do código mudar;
+- permanece auditável no resultado.
+
+### 4. Analise novamente
+
+```bash
+npx zunvio-score
+```
+
+O ZUNVIO mostra o que surgiu, o que permaneceu e o que foi resolvido desde a análise anterior.
+
+### 5. Verifique a evidência
+
+```bash
+npx zunvio-score verify resultado.json
+```
+
+O `verify` confere a integridade do resultado em JSON.
+
+## Comandos
+
+| Comando | Função |
+|---|---|
+| `npx zunvio-score [pasta]` | Analisa o projeto. |
+| `npx zunvio-score init [pasta]` | Registra o contexto declarado do projeto. |
+| `npx zunvio-score revisar <chave> [pasta]` | Registra uma revisão humana para item elegível. |
+| `npx zunvio-score glossario` | Explica os termos do resultado. |
+| `npx zunvio-score verify <arquivo.json>` | Verifica a integridade de um resultado. |
+
+## Opções principais
 
 ```text
 --json                   Resultado em JSON
---relatorio <arquivo>    Onde gravar o relatório HTML
--d, --diff               Compara com uma versão anterior (--base <ref>, --head <ref>)
--c, --contract <arquivo> Descrição do projeto em JSON (alternativa ao init)
--e, --evidence <arquivo> Evidências em JSON (alternativa ao init)
---no-banner              Sem a arte no topo do resultado
+--relatorio <arquivo>    Caminho do relatório HTML
+-d, --diff               Compara duas versões
+-c, --contract <arquivo> Contexto do projeto em JSON
+-e, --evidence <arquivo> Evidências em JSON
+--no-banner              Oculta a arte do terminal
 -h, --help               Ajuda
 -v, --version            Versão
 ```
 
-## Limites
+## Como a análise funciona
 
-- A análise é estática: não executa o projeto e não vê o que só acontece em produção.
-- Cobre os arquivos, motores e regras registrados no resultado; o que fica de fora aparece como limitação.
-- Arquivos que um motor conseguiu ler só em parte aparecem nomeados, com o motivo; leitura parcial nunca conta como prova.
-- A decisão vale para a versão exata analisada (o commit registrado no resultado).
+O ZUNVIO usa análise estática e executa os motores localmente.
+
+- **Semgrep** participa da análise de segurança do código.
+- **Gitleaks** participa da análise do histórico Git para segredos.
+- O ZUNVIO também produz e verifica evidências próprias de cobertura e decisão.
+
+O resultado registra versões, cobertura e limitações relevantes para que uma execução não aparente mais confiança do que a evidência permite.
+
+## Limitações
+
+O ZUNVIO é uma camada de evidência para apoiar a decisão de publicação, não uma certificação de segurança.
+
+- A análise é estática e não observa comportamentos que existam somente em execução ou produção.
+- A cobertura é limitada aos arquivos, regras e motores registrados no resultado.
+- Leitura parcial não conta como análise completa.
+- A decisão vale para a versão exata analisada.
+- Uma decisão **PUBLICAR** significa que os gates definidos foram satisfeitos dentro do escopo analisado; não significa ausência absoluta de vulnerabilidades.
+
+## Uso em CI
+
+O processo retorna códigos de saída apropriados para automação:
+
+| Código | Resultado |
+|---:|---|
+| `0` | PUBLICAR |
+| `1` | NÃO PUBLICAR |
+| `2` | INCONCLUSIVO |
+| `3` | Erro operacional ou uso inválido |
+
+## Privacidade e execução local
+
+A análise do código-fonte realizada pelo ZUNVIO CLI ocorre localmente. O ZUNVIO não envia intencionalmente o conteúdo do código analisado aos serviços do ZUNVIO como parte dessa análise local.
+
+Semgrep e Gitleaks são componentes de terceiros e permanecem sujeitos às respectivas licenças e comportamentos.
 
 ## Termos de uso
 
-Uso gratuito para analisar projetos seus ou de terceiros que você tenha autorização para analisar, inclusive em uso
-comercial e em CI. O código é proprietário: não pode ser redistribuído, revendido, oferecido como serviço nem
-reutilizado em outro software sem autorização. Os termos completos estão em [LICENSE.md](LICENSE.md).
+O ZUNVIO pode ser usado gratuitamente para analisar projetos próprios ou de terceiros quando você possui autorização, inclusive em uso comercial e CI.
 
-Site: https://zunvio.com.br/
+O software é proprietário. Redistribuição, revenda, oferta como serviço e reutilização do software em outro produto dependem dos termos aplicáveis.
+
+Consulte [LICENSE.md](LICENSE.md) para os termos completos.
+
+---
+
+<div align="center">
+
+**Confiança antes de publicar.**
+
+[Conheça o ZUNVIO](https://zunvio.com.br/)
+
+</div>
