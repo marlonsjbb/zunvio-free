@@ -5,6 +5,7 @@ import {
   contextoDeclarado, executarInit, executarRevisar, formatarEvolucao, gravarRelatorio, registrarEvolucao, registrarRevisaveis
 } from './cli-produto.mjs';
 import { gerarRelatorioHtml } from './report/html-report.mjs';
+import { abrirRelatorio, mensagemAbertura, sessaoInterativa } from './utils/abrir-relatorio.mjs';
 import { createHash } from 'node:crypto';
 import { executarAnaliseProjeto } from './orchestrator.mjs';
 import { VERSAO_EVIDENCE_PACK } from './models/evidence-pack.mjs';
@@ -477,7 +478,7 @@ export function formatarRelatorioHumano(relatorio, opcoes = {}) {
     linhas.push('COBERTURA');
     if (Number.isInteger(score.cobertura)) {
       linhas.push(lim(`  COBERTURA DA AVALIAÇÃO · ${numSeguro(score.cobertura)}%`));
-      linhas.push('  Valor usado pela decisão: o menor percentual entre os portões concluídos e o contexto comprovado do contrato.');
+      linhas.push('  Valor usado pela decisão: o menor percentual entre os portões concluídos e o contexto declarado do contrato.');
     }
     if (Number.isInteger(score.coberturaMotores)) {
       linhas.push(lim(`  COBERTURA DOS MOTORES · ${numSeguro(score.coberturaMotores)}%`));
@@ -1874,7 +1875,7 @@ export async function executarCli(args = [], io = {}, opcoesExtras = {}) {
     const persistir = opcoesExtras.persistir === true;
     const declarado = persistir ? contextoDeclarado(parsed.target) : { contrato: null, evidencias: null };
     const deltaAutomatico = persistir && !parsed.diff && temCommitAnterior(parsed.target);
-    const { persistir: _p, ...opcoesMotor } = opcoesExtras;
+    const { persistir: _p, abrirRelatorio: _a, interativo: _i, ...opcoesMotor } = opcoesExtras;
     const relatorio = await executarAnaliseProjeto(parsed.target, {
       delta: {
         ativo: parsed.diff || deltaAutomatico,
@@ -1904,6 +1905,15 @@ export async function executarCli(args = [], io = {}, opcoesExtras = {}) {
       stdout(`${formatarRelatorioHumano(relatorio, { noBanner: parsed.noBanner === true, caminhoRelatorio })}\n`);
       if (evolucao) stdout(`${formatarEvolucao(evolucao, (t) => textoLegivelSeguro(t, 300))}\n\n`);
       if (persistir && !caminhoRelatorio) stdout('Relatório HTML não pôde ser gerado nesta análise.\n');
+      // Entrega ao usuário (0.1.14): com o relatório já gravado e o caminho já impresso, abre no navegador padrão em
+      // sessão interativa. Falha de abertura só vira aviso — nunca muda decisão, código de saída nem o arquivo.
+      const interativo = opcoesExtras.interativo ?? sessaoInterativa();
+      if (persistir && caminhoRelatorio && interativo) {
+        const abrir = opcoesExtras.abrirRelatorio || abrirRelatorio;
+        let resultado;
+        try { resultado = await abrir(caminhoRelatorio); } catch { resultado = { aberto: false, motivo: 'ABRIDOR_FALHOU' }; }
+        stdout(`${mensagemAbertura(resultado, textoLegivelSeguro(caminhoRelatorio, 300))}\n`);
+      }
     }
 
     // MASS-307: código de saída em TRÊS estados canônicos.

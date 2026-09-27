@@ -10,6 +10,9 @@ export const VERSAO_RELATORIO_HTML = '1.0.0';
 
 const WORDMARK_PATH = fileURLToPath(new URL('../../marca/zunvio-wordmark.png', import.meta.url));
 const WORDMARK_SHA256 = '446450e43c2b42bc7a300fc3a2710f828bcae71c81f7d1f4dada786bb00dc0f3';
+// Mesmo ícone do site publicado (site/assets/zunvio-favicon-256.png), empacotado em marca/.
+const FAVICON_PATH = fileURLToPath(new URL('../../marca/zunvio-favicon-256.png', import.meta.url));
+const FAVICON_SHA256 = 'e10335cdcf6548a3bf5945cfb2e4e9c8ec859b2878b638238445f22c1592f424';
 
 const DIMENSOES = Object.freeze({
   objetivoProduto: 'Objetivo do produto',
@@ -56,6 +59,15 @@ function wordmarkDataUri() {
   const digest = createHash('sha256').update(bytes).digest('hex');
   if (digest !== WORDMARK_SHA256) {
     throw new Error('Ativo oficial do wordmark ZUNVIO diverge da referência de marca aprovada.');
+  }
+  return `data:image/png;base64,${bytes.toString('base64')}`;
+}
+
+function faviconDataUri() {
+  const bytes = readFileSync(FAVICON_PATH);
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  if (digest !== FAVICON_SHA256) {
+    throw new Error('Ícone oficial do ZUNVIO diverge da referência de marca aprovada.');
   }
   return `data:image/png;base64,${bytes.toString('base64')}`;
 }
@@ -467,7 +479,20 @@ function construirCss() {
     h1, h2, h3, h4 { margin-top: 0; font-family: "Arial Narrow", "Avenir Next Condensed", ui-sans-serif, sans-serif; line-height: 1.08; }
     h1 { max-width: 780px; margin-bottom: 18px; font-size: clamp(2.35rem, 6vw, 4.8rem); letter-spacing: -.035em; }
     .lede { max-width: 760px; margin: 0; color: var(--cream-muted); font-size: clamp(1rem, 2vw, 1.2rem); }
-    .metrics { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; margin-top: 38px; }
+    .metrics { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 12px; margin-top: 38px; }
+    .metric__note code { white-space: nowrap; }
+    .metric__health { display: inline-block; margin-top: 12px; border: 1px solid currentColor; border-radius: 999px; padding: 4px 9px; font-size: .72rem; font-weight: 850; }
+    .metric__health--conclusiva { color: var(--ok); }
+    .metric__health--parcial, .metric__health--incompleta { color: var(--warn); }
+    .score-bar { display: flex; height: 8px; margin-top: 14px; overflow: hidden; border-radius: 8px; background: var(--iron-soft); }
+    .score-bar__part--atende { background: var(--ok); }
+    .score-bar__part--nao-atende { background: var(--danger); }
+    .score-bar__part--sem-evidencia { background: repeating-linear-gradient(135deg, var(--neutral) 0 3px, var(--iron-soft) 3px 6px); }
+    .score-bar__part--nao-aplicavel { background: var(--line); }
+    .score-legend { margin: 10px 0 0; padding: 0; list-style: none; color: var(--cream-muted); font-size: .78rem; }
+    .score-legend li { display: flex; align-items: baseline; gap: 6px; }
+    .score-legend strong { color: var(--cream); }
+    .score-legend__dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 2px; }
     .metric { min-height: 132px; padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: rgba(16,21,26,.62); }
     .metric__label { display: block; color: var(--cream-muted); font-size: .78rem; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
     .metric__value { display: block; margin-top: 10px; font-size: clamp(1.55rem, 3.5vw, 2.55rem); font-weight: 850; line-height: 1; }
@@ -590,21 +615,78 @@ function construirCss() {
   `;
 }
 
+// Decomposição dos 100 pontos pelo estado canônico de cada portão (`decision.gates`). Só aparece quando os pesos
+// fecham com o score selado; caso contrário não é mostrada — a UI não inventa composição.
+function composicaoDoScore(gates, score) {
+  if (!Array.isArray(gates) || gates.length === 0) return null;
+  const soma = { atende: 0, naoAtende: 0, semEvidencia: 0, naoAplicavel: 0 };
+  const faixa = { ATENDE: 'atende', NAO_ATENDE: 'naoAtende', NAO_COMPROVADO: 'semEvidencia', NAO_APLICAVEL: 'naoAplicavel' };
+  for (const gate of gates) {
+    if (!Number.isInteger(gate?.peso) || gate.peso < 0 || !faixa[gate.estado]) return null;
+    soma[faixa[gate.estado]] += gate.peso;
+  }
+  const total = soma.atende + soma.naoAtende + soma.semEvidencia + soma.naoAplicavel;
+  return soma.atende === score && total === 100 ? soma : null;
+}
+
+function renderComposicaoScore(composicao) {
+  if (!composicao) return '';
+  const faixas = [
+    ['atende', composicao.atende, 'atende'],
+    // NAO_ATENDE não tem causa universal (scanner, teste reprovado, proveniência, integridade…): a causa de cada
+    // portão está nos itens de ação, vinda do próprio portão.
+    ['nao-atende', composicao.naoAtende, 'não atende: portões que não atenderam aos critérios da avaliação'],
+    ['sem-evidencia', composicao.semEvidencia, 'sem evidência: faltou prova, não é defeito'],
+    ['nao-aplicavel', composicao.naoAplicavel, 'não aplicável']
+  ].filter(([classe, pontos]) => pontos > 0 || classe !== 'nao-aplicavel');
+  const descricao = faixas.map(([, pontos, texto]) => `${pontos} ${texto.split(':')[0]}`).join(', ');
+  return `<div class="score-bar" role="img" aria-label="Composição dos 100 pontos: ${descricao}">${faixas
+    .filter(([, pontos]) => pontos > 0)
+    .map(([classe, pontos]) => `<span class="score-bar__part score-bar__part--${classe}" style="width:${pontos}%"></span>`)
+    .join('')}</div>
+          <ul class="score-legend">${faixas
+    .map(([classe, pontos, texto]) => `<li><span class="score-legend__dot score-bar__part--${classe}" aria-hidden="true"></span><strong>${pontos}</strong> ${texto}</li>`)
+    .join('')}</ul>`;
+}
+
+// Mesma regra do terminal (`formatarRelatorioHumano`, SAÚDE DA AVALIAÇÃO): INCOMPLETA quando a decisão é
+// INCONCLUSIVO; PARCIAL quando algum portão ou dimensão do contrato não foi comprovado; senão CONCLUSIVA.
+function saudeDaAvaliacao(evidencePack, coberturaMotores, coberturaAvaliacao) {
+  if (evidencePack.decision?.outcome === 'UNPROVEN') return { classe: 'incompleta', rotulo: 'INCOMPLETA' };
+  const gates = Array.isArray(evidencePack.decision?.gates) ? evidencePack.decision.gates : [];
+  const claims = Array.isArray(evidencePack.claimEvidenceMap?.claims) ? evidencePack.claimEvidenceMap.claims : [];
+  const parcial = gates.some((gate) => gate?.estado === 'NAO_COMPROVADO')
+    || claims.some((claim) => claim?.status === 'NAO_COMPROVADO')
+    || (!Number.isInteger(coberturaMotores) && coberturaAvaliacao < 100);
+  return parcial ? { classe: 'parcial', rotulo: 'PARCIAL' } : { classe: 'conclusiva', rotulo: 'CONCLUSIVA' };
+}
+
+function resumoBloqueadores(bloqueadores) {
+  const naoAtende = bloqueadores.filter((item) => item.status === 'NAO_ATENDE').length;
+  const semEvidencia = bloqueadores.filter((item) => item.status === 'NAO_COMPROVADO').length;
+  if (bloqueadores.length === 0) return 'Nenhum item obrigatório pendente.';
+  return `${naoAtende} não ${naoAtende === 1 ? 'atende' : 'atendem'} · ${semEvidencia} sem evidência. Ordenados por impacto.`;
+}
+
 export function gerarRelatorioHtml(evidencePack) {
   const validacao = validarEvidencePackV0(evidencePack);
   if (!validacao.valido) {
     throw new Error(`Evidence Pack inválido para relatório HTML: ${validacao.erros.join('; ')}`);
   }
 
-  // `decision.coverage` é o mínimo entre motores e contrato (uso interno do
-  // portão de PUBLICAR) — vira 0% sempre que não há --contract, mesmo com os
-  // motores rodando normalmente. A manchete precisa da cobertura dos MOTORES
-  // (o que de fato foi verificado), igual o terminal já faz (`formatarRelatorioHumano`).
-  const coberturaMotores = evidencePack.avaliacao?.score?.coberturaMotores;
-  const coverage = Number.isInteger(coberturaMotores)
-    ? inteiroSeguro(coberturaMotores, 0, 0, 100)
-    : inteiroSeguro(evidencePack.decision?.coverage, 0, 0, 100);
+  // As três coberturas aparecem separadas, como no terminal: a da avaliação (`decision.coverage`, usada pela
+  // decisão), a dos motores (portões com conclusão, positiva OU negativa) e o contexto do contrato. A dos motores
+  // não pode ser manchete de "quanto foi comprovado" — ela conta também o que foi reprovado.
   const score = inteiroSeguro(evidencePack.decision?.score, 0, 0, 100);
+  const composicao = composicaoDoScore(evidencePack.decision?.gates, score);
+  const coberturaAvaliacao = inteiroSeguro(evidencePack.decision?.coverage, 0, 0, 100);
+  const coberturaMotores = Number.isInteger(evidencePack.avaliacao?.score?.coberturaMotores)
+    ? inteiroSeguro(evidencePack.avaliacao.score.coberturaMotores, 0, 0, 100)
+    : (composicao ? composicao.atende + composicao.naoAtende + composicao.naoAplicavel : null);
+  const coberturaContrato = [evidencePack.avaliacao?.score?.coberturaContrato, evidencePack.canonicalContent?.publicationContextCoverage]
+    .find((valor) => Number.isInteger(valor));
+  const contratoFornecido = evidencePack.avaliacao?.contextoPublicacao?.provided === true;
+  const saude = saudeDaAvaliacao(evidencePack, coberturaMotores, coberturaAvaliacao);
   // O score é SEMPRE sobre 100 (soma dos pesos dos portões); `maxPossibleScore`
   // é outra informação (o teto que ainda dá pra alcançar depois de descontar
   // reprovações comprovadas) — nunca o denominador do score observado.
@@ -631,6 +713,7 @@ export function gerarRelatorioHtml(evidencePack) {
   <meta name="referrer" content="no-referrer">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; connect-src 'none'; font-src 'none'; object-src 'none'; media-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Relatório ZUNVIO — ${escaparHtml(decisao.eyebrow, 80)}</title>
+  <link rel="icon" type="image/png" sizes="256x256" href="${faviconDataUri()}">
   <style>${construirCss()}</style>
 </head>
 <body>
@@ -651,13 +734,34 @@ export function gerarRelatorioHtml(evidencePack) {
       ${renderApoios(evidencePack)}
       <div class="metrics" aria-label="Indicadores principais">
         <div class="metric">
-          <span class="metric__label">Quanto conseguimos comprovar</span>
-          <strong class="metric__value">${coverage}%</strong>
-          <progress max="100" value="${coverage}">${coverage}%</progress>
+          <span class="metric__label">Cobertura da avaliação</span>
+          <strong class="metric__value">${coberturaAvaliacao}%</strong>
+          <progress max="100" value="${coberturaAvaliacao}">${coberturaAvaliacao}%</progress>
+          <span class="metric__note">${Number.isInteger(coberturaContrato) && Number.isInteger(coberturaMotores)
+            ? `Valor usado pela decisão: o menor entre a cobertura dos motores (${coberturaMotores}%) e o contexto declarado do contrato (${inteiroSeguro(coberturaContrato, 0, 0, 100)}%).`
+            : 'Valor usado pela decisão.'}</span>
+          <span class="metric__health metric__health--${saude.classe}">Saúde da avaliação: ${saude.rotulo}</span>
+        </div>
+        <div class="metric">
+          <span class="metric__label">Cobertura dos motores</span>
+          <strong class="metric__value">${Number.isInteger(coberturaMotores) ? `${coberturaMotores}%` : '—'}</strong>
+          ${Number.isInteger(coberturaMotores) ? `<progress max="100" value="${coberturaMotores}">${coberturaMotores}%</progress>` : ''}
+          <span class="metric__note">Peso dos portões que chegaram a uma conclusão, positiva ou negativa. Não é o quanto foi aprovado.</span>
+        </div>
+        <div class="metric">
+          <span class="metric__label">Contexto do contrato</span>
+          <strong class="metric__value">${inteiroSeguro(coberturaContrato, 0, 0, 100)}%<small> declarado</small></strong>
+          <progress max="100" value="${inteiroSeguro(coberturaContrato, 0, 0, 100)}">${inteiroSeguro(coberturaContrato, 0, 0, 100)}%</progress>
+          <span class="metric__note">${contratoFornecido || inteiroSeguro(coberturaContrato, 0, 0, 100) > 0
+            ? 'Percentual das 12 dimensões declaradas no contrato. Declarar não comprova.'
+            : 'Sem Contrato de Publicação: nenhuma dimensão foi declarada (forneça com <code>--contract</code>).'}${mapa
+            ? ` Comprovadas por evidência no mapa de claims: ${claimsAtende} de ${totalClaims}.`
+            : ''}</span>
         </div>
         <div class="metric">
           <span class="metric__label">Score observado</span>
           <strong class="metric__value">${score}<small>/100</small></strong>
+          ${renderComposicaoScore(composicao)}
           <span class="metric__note">${maxScoreAlcancavel < 100
             ? `Ainda alcançável: ${maxScoreAlcancavel}. Não substitui a decisão e suas provas.`
             : 'Não substitui a decisão e suas provas.'}</span>
@@ -665,7 +769,7 @@ export function gerarRelatorioHtml(evidencePack) {
         <div class="metric">
           <span class="metric__label">Itens que pedem ação</span>
           <strong class="metric__value">${bloqueadores.length}</strong>
-          <span class="metric__note">Ordenados por impacto e prioridade de revisão.</span>
+          <span class="metric__note">${resumoBloqueadores(bloqueadores)}</span>
         </div>
         <div class="metric">
           <span class="metric__label">Release analisada</span>
